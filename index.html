@@ -203,7 +203,8 @@ const PF={
   ridge:q=>1-q,
   soft:q=>0.5+0.5*Math.cos(q*Math.PI),
   paste:q=>Math.sqrt(Math.max(0,1-q*q*q*q))*0.72,
-  rim:q=>Math.exp(-(((q-0.72)/0.17)**2))*0.9+0.12*(1-q),
+  rim:q=>Math.exp(-(((q-0.7)/0.24)**2))*0.9+0.15*(1-q),
+  plateau:q=>q<0.55?1:Math.cos((q-0.55)/0.45*Math.PI/2),
   stone:q=>Math.pow(1-q*q,0.5),
   flatten:q=>Math.pow(1-q*q,0.8)*0.8,
 };
@@ -289,11 +290,21 @@ function rope(S,a,b,o){
 }
 function sphere(S,cx,cy,r,base,o){ const p={x:cx,y:cy,r:r,u:0,base:base}; rope(S,p,p,o); }
 
-function carve(S,cx,cy,r,cz){
-  const q=S.q,W=S.w,Hh=S.h, X=cx*q,Y=cy*q,R=r*q;
-  const x0=Math.max(0,Math.floor(X-R)),x1=Math.min(W-1,Math.ceil(X+R)),y0=Math.max(0,Math.floor(Y-R)),y1=Math.min(Hh-1,Math.ceil(Y+R));
-  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){ const dx=x+.5-X,dy=y+.5-Y,d2=dx*dx+dy*dy; if(d2>=R*R) continue;
-    const z=Math.max(0,cz-Math.sqrt(R*R-d2)/q), i=y*W+x; if(S.H[i]>z){ S.H[i]=z; if(z<0.4){ S.T[i*4+3]=0; S.X[i*4+1]=0; } } }
+function carve(S,cx,cy,r,cz,irr){
+  irr=irr||0; const q=S.q,W=S.w,Hh=S.h, X=cx*q,Y=cy*q,R=r*q, RR=R*(1+irr), ph=(cx*7.13+cy*3.7)%250;
+  const x0=Math.max(0,Math.floor(X-RR)),x1=Math.min(W-1,Math.ceil(X+RR)),y0=Math.max(0,Math.floor(Y-RR)),y1=Math.min(Hh-1,Math.ceil(Y+RR));
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){ const dx=x+.5-X,dy=y+.5-Y; let qq=Math.sqrt(dx*dx+dy*dy)/R;
+    if(irr) qq+=irr*(nz(dx/R*14+ph,dy/R*14)*0.8+nz(dx/R*40+ph,dy/R*40+60)*0.3);
+    if(qq>=1) continue;
+    const z=Math.max(0,cz-Math.sqrt(1-qq*qq)*r), i=y*W+x; if(S.H[i]>z){ S.H[i]=z; if(z<0.4){ S.T[i*4+3]=0; S.X[i*4+1]=0; } } }
+  if(x0<=x1&&y0<=y1) S.mark(x0,y0,x1,y1);
+}
+function crater(S,cx,cy,r,depth,rim){
+  const q=S.q,W=S.w,Hh=S.h,X=cx*q,Y=cy*q,R=r*q,RR=R*1.45, top=S.hAt(cx,cy);
+  const x0=Math.max(0,Math.floor(X-RR)),x1=Math.min(W-1,Math.ceil(X+RR)),y0=Math.max(0,Math.floor(Y-RR)),y1=Math.min(Hh-1,Math.ceil(Y+RR));
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){ const dx=x+.5-X,dy=y+.5-Y,qq=Math.sqrt(dx*dx+dy*dy)/R, i=y*W+x; if(qq>=1.45||S.H[i]<=0.05) continue;
+    if(qq<1){ const z=Math.max(0,top-depth*Math.sqrt(1-qq*qq)); if(S.H[i]>z){ S.H[i]=z; if(z<0.3){ S.T[i*4+3]=0; S.X[i*4+1]=0; } } }
+    S.H[i]+=rim*r*Math.exp(-(((qq-1.04)/0.14)**2)); }
   if(x0<=x1&&y0<=y1) S.mark(x0,y0,x1,y1);
 }
 function gaussAdd(S,cx,cy,r,amt,o){
@@ -334,7 +345,8 @@ function leaf(S,x,y,ang,len,wid,base,o){
     let w; if(shape===1) w=wid*(1-s)*Math.min(1,s*7+0.25); else w=wid*Math.pow(Math.sin(Math.PI*Math.pow(s,0.8)),0.7);
     if(w<=0.05) continue; const qq=Math.abs(lv)/w; if(qq>=1) continue;
     let h;
-    if(shape===1) h=(1-qq)*w*thick*1.4;
+    if(o.plat) h=o.plat*Math.pow(Math.min(1,(1-qq)*w/(o.bev||1)),0.8);
+    else if(shape===1) h=(1-qq)*w*thick*1.4;
     else h=Math.sqrt(1-qq*qq)*w*thick*(0.55+0.45*Math.sin(Math.PI*s)) - rib*w*thick*Math.exp(-((qq/0.13)**2)) + 0.05*w*thick*Math.cos(qq*14+s*10);
     put(S,py*W+px,base+h,o,qq,(px+.5)/q,(py+.5)/q,S.anim?(o.birth||0)+s*(o.bs||0)+qq*(o.bq||0):0);
   }
@@ -343,7 +355,7 @@ function leaf(S,x,y,ang,len,wid,base,o){
 
 // ---- path generation (resampling + dynamics) ----
 class PathGen{
-  constructor(P,br,seed){ this.P=P; this.sp=Math.max(0.6,br.spacing?br.spacing(P):P.size*0.16); this.out=[]; this.prev=null; this.carry=0; this.spd=0; this.lastT=0; this.seed=seed; this.dwell=br.dwell||0; }
+  constructor(P,br,seed){ this.P=P; this.sp=Math.max(0.6,br.spacing?br.spacing(P):P.size*(P.size>40?0.24:0.18)); this.out=[]; this.prev=null; this.carry=0; this.spd=0; this.lastT=0; this.seed=seed; this.dwell=br.dwell||0; }
   push(p){
     if(!this.prev){ this.prev=p; this.emit(p.x,p.y,p.p,p.t); this.carry=this.sp; return; }
     const a=this.prev, dx=p.x-a.x, dy=p.y-a.y, L=Math.hypot(dx,dy), dt=Math.max(1,p.t-a.t);
@@ -362,7 +374,7 @@ class PathGen{
     let r=P.size*0.5*Math.max(0.08,1+(P.pressure||0)*(pr-0.5)*1.6);
     if(P.speedInf) r*=clamp(1-P.speedInf*(this.spd-0.35)*0.9,0.15,2.5);
     if(P.wvar) r*=Math.max(0.1,1+P.wvar*n1(u*0.025*(P.wfreq||1)+this.seed*1.7+50)*1.3);
-    o.push({x:wx,y:wy,cx:x,cy:y,r,u,sp:this.spd,pr,t,nx,ny});
+    o.push({x:wx,y:wy,cx:x,cy:y,r,rb:r,u,sp:this.spd,pr,t,nx,ny});
     this.lastT=t;
   }
 }
@@ -380,7 +392,7 @@ function symMats(sym,W,H){
   }
   return out;
 }
-function xfPt(m,p,cx,cy){ const dx=p.x-cx, dy=p.y-cy; return {x:cx+m[0]*dx+m[1]*dy, y:cy+m[2]*dx+m[3]*dy, cx:p.cx, cy:p.cy, r:p.r, u:p.u, sp:p.sp, pr:p.pr, t:p.t, nx:m[0]*p.nx+m[1]*p.ny, ny:m[2]*p.nx+m[3]*p.ny}; }
+function xfPt(m,p,cx,cy){ const dx=p.x-cx, dy=p.y-cy; return {x:cx+m[0]*dx+m[1]*dy, y:cy+m[2]*dx+m[3]*dy, cx:p.cx, cy:p.cy, r:p.r, rb:p.rb==null?p.r:p.rb, u:p.u, sp:p.sp, pr:p.pr, t:p.t, nx:m[0]*p.nx+m[1]*p.ny, ny:m[2]*p.nx+m[3]*p.ny}; }
 
 // ---- helpers used by brushes ----
 function baseAt(S,p){ let m=0; for(const k of [-0.85,-0.45,0,0.45,0.85]) m=Math.max(m,S.h0At(p.x+p.nx*k*p.r,p.y+p.ny*k*p.r)); return m*0.94; }
@@ -424,6 +436,39 @@ function taperF(P,u,total){ let m=1; const R=Math.max(1,P.size*0.5), dp=total==n
   return m; }
 function tapered(p,P,total){ const m=taperF(P,p.u,total); if(m===1) return p; const q=Object.assign({},p); q.r=p.r*m; return q; }
 
+// ---- pooling: material gathers into elongated pools (and where the pen slows or turns), thinning in between ----
+class Pooler{
+  constructor(P,seed){ this.P=P; this.R=Math.max(1,P.size*0.5); this.rng=mulberry(seed*7+13); this.b=[]; this.next=this.R*(1.2+this.rng()*2.5); }
+  ensure(u){ const R=this.R, g=Math.max(0.3,this.P.poolGap||1); while(this.next<u+R*12){ const r=this.rng; this.b.push([this.next,R*(2.4+3.2*r())*Math.sqrt(g),0.3+0.8*r()*r()+0.15]); this.next+=R*(7+10*r())*g; } }
+  bump(u){ this.ensure(u); let m=0; for(const [c,w,a] of this.b){ const d=(u-c)/w; if(d>-3&&d<3){ const v=a*Math.exp(-d*d*(d>0?1.4:0.8)); if(v>m) m=v; } } return m; }
+  at(u,slow,curv){ const P=this.P, pool=P.pool||0, thin=P.thin||0; return (1-thin*0.6)*(1+pool*(1.25*this.bump(u)+0.3*slow+0.25*(curv||0))); }
+}
+function poolArray(out,P,seed,sp){
+  if(!(P.pool>0||P.thin>0)||out.length<2) return null;
+  const n=out.length, R=Math.max(1,P.size*0.5), po=new Pooler(P,seed), k=Math.max(1,Math.round(R*0.9/sp));
+  const slow=new Float32Array(n), curv=new Float32Array(n), m=new Float32Array(n);
+  for(let i=0;i<n;i++){ slow[i]=clamp(1-out[i].sp/0.5,0,1);
+    const a=out[Math.max(0,i-k)], b=out[i], c=out[Math.min(n-1,i+k)]; const a1=Math.atan2(b.y-a.y,b.x-a.x), a2=Math.atan2(c.y-b.y,c.x-b.x); let d=a2-a1; while(d>Math.PI) d-=6.283; while(d<-Math.PI) d+=6.283; curv[i]=clamp(Math.abs(d)/1.2,0,1); }
+  const sm=a=>{ const o=new Float32Array(n), w=k*2; for(let i=0;i<n;i++){ let s=0,t=0; for(let j=Math.max(0,i-w);j<=Math.min(n-1,i+w);j++){ const g=Math.exp(-(((j-i)/(w*0.55))**2)); s+=a[j]*g; t+=g; } o[i]=s/t; } return o; };
+  const ss=sm(slow), cc=sm(curv);
+  for(let i=0;i<n;i++) m[i]=po.at(out[i].u,ss[i],cc[i]);
+  return m;
+}
+function scaleR(p,f){ if(f==null||f===1) return p; const q=Object.assign({},p); q.r=p.r*f; q.rb=(p.rb==null?p.r:p.rb)*f; return q; }
+
+function polishStroke(S,pts,rpx){
+  if(!pts.length||rpx<1) return; let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for(const p of pts){ const r=p.r*2.2+4; x0=Math.min(x0,p.x-r); y0=Math.min(y0,p.y-r); x1=Math.max(x1,p.x+r); y1=Math.max(y1,p.y+r); }
+  const q=S.q,W=S.w; x0=Math.max(0,Math.floor(x0*q)); y0=Math.max(0,Math.floor(y0*q)); x1=Math.min(W-1,Math.ceil(x1*q)); y1=Math.min(S.h-1,Math.ceil(y1*q)); if(x0>=x1||y0>=y1) return;
+  const bw=x1-x0+1, bh=y1-y0+1, H=S.H, H0=S.H0, tmp=new Float32Array(bw*bh), out=new Float32Array(bw*bh), r=rpx;
+  for(let pass=0;pass<2;pass++){
+    for(let y=0;y<bh;y++){ const row=(y+y0)*W+x0; let s=0,c=0; for(let x=-r;x<=r;x++){ const xx=clamp(x,0,bw-1); s+=pass?out[y*bw+xx]:H[row+xx]; c++; }
+      for(let x=0;x<bw;x++){ tmp[y*bw+x]=s/c; const a=clamp(x-r,0,bw-1), b=clamp(x+r+1,0,bw-1); s+=(pass?out[y*bw+b]:H[row+b])-(pass?out[y*bw+a]:H[row+a]); } }
+    for(let x=0;x<bw;x++){ let s=0,c=0; for(let y=-r;y<=r;y++){ s+=tmp[clamp(y,0,bh-1)*bw+x]; c++; }
+      for(let y=0;y<bh;y++){ out[y*bw+x]=s/c; const a=clamp(y-r,0,bh-1), b=clamp(y+r+1,0,bh-1); s+=tmp[b*bw+x]-tmp[a*bw+x]; } } }
+  for(let y=0;y<bh;y++) for(let x=0;x<bw;x++){ const i=(y+y0)*W+x+x0; if(Math.abs(H[i]-H0[i])>1e-5&&H[i]>0.02) H[i]=out[y*bw+x]; }
+  S.mark(x0,y0,x1,y1);
+}
+
 // ---- stroke runner: renders one stroke (all symmetry copies), live or full ----
 function strokeParams(st){
   const br=BRUSH[st.brush]; const P=Object.assign({},br.defaults,st.P);
@@ -453,7 +498,8 @@ class StrokeRun{
       this.gen.push(p); }
     const out=this.gen.out;
     for(;this.n<out.length;this.n++){
-      for(const c of this.copies){ c.pts.push(xfPt(c.m,tapered(out[this.n],this.P,null),this.cx,this.cy));
+      const op=out[this.n]; let pf=null; if(this.P.pool>0||this.P.thin>0){ if(!this.pooler) this.pooler=new Pooler(this.P,this.st.seed); pf=this.pooler.at(op.u,clamp(1-op.sp/0.5,0,1),0); }
+      for(const c of this.copies){ c.pts.push(xfPt(c.m,tapered(scaleR(op,pf),this.P,null),this.cx,this.cy));
         if(this.n===0){ br.start&&br.start(ctx,c); } else br.seg(ctx,c,this.n); }
     }
   }
@@ -462,7 +508,8 @@ class StrokeRun{
     this.gen=new PathGen(this.P,this.br,this.st.seed); const raw=cleanRaw(this.st.raw.map(this.tf),this.P); for(const p of raw) this.gen.push(p); this.fed=this.st.raw.length;
     const out=this.gen.out; if(out.length===1) out.push(Object.assign({},out[0])); // a tap still makes a dot
     const tot=out.length?out[out.length-1].u:0;
-    this.paths=this.mats.map((m,k)=>({key:this.st.id+':'+k,k,pts:out.map(p=>xfPt(m,tapered(p,this.P,tot),this.cx,this.cy)),L:tot,st:this.st}));
+    const pm=poolArray(out,this.P,this.st.seed,this.gen.sp);
+    this.paths=this.mats.map((m,k)=>({key:this.st.id+':'+k,k,pts:out.map((p,j)=>xfPt(m,tapered(scaleR(p,pm?pm[j]:null),this.P,tot),this.cx,this.cy)),L:tot,st:this.st}));
     return this.paths;
   }
   full(haveSnap){
@@ -478,6 +525,7 @@ class StrokeRun{
       br.start&&br.start(ctx,c);
       for(let i=1;i<c.pts.length;i++) br.seg(ctx,c,i);
       br.end&&br.end(ctx,c);
+      if(br.polish){ const rpx=Math.max(1,Math.round(this.P.size*0.5*S.q*0.11*br.polish)); polishStroke(S,c.pts,rpx); }
     }
   }
 }
@@ -490,7 +538,7 @@ function AT(ctx,t,beh,bq){ if(!ctx.S.anim) return NOANIM; return {eid:++ctx.S.ei
 
 // ================= BRUSHES =================
 const BRUSH={}; const BLIST=[];
-const COMMON={size:24,pressure:0.6,speedInf:0,wvar:0,wfreq:1,scatter:0,sfreq:1,smooth:0.35,clean:0.6,taperIn:0.2,taperOut:0.2};
+const COMMON={size:24,pressure:0.6,speedInf:0,wvar:0,wfreq:1,scatter:0,sfreq:1,smooth:0.35,clean:0.6,taperIn:0.2,taperOut:0.2,pool:0,thin:0,poolGap:1};
 function defBrush(b){ b.defaults=Object.assign({},COMMON,b.defaults); BRUSH[b.id]=b; if(!b.hidden){ BLIST.push(b); b.num=BLIST.length; } }
 const ENDS={k:'ends',l:'End shape',t:'s',o:[['round','Round'],['drop','Drop'],['wedge','Wedge']]};
 const LAYER={k:'mode',l:'Ropes',t:'s',o:[['layer','Layer'],['merge','Merge']]};
@@ -498,79 +546,86 @@ const METALS=[['chrome','Chrome'],['gold','Gold'],['steel','Steel'],['bronze','B
 const cOf=P=>hex2rgb(P.color);
 
 function ropeSeg(ctx,c,i,o,layer,rmul){ if(ctx.S.anim&&o.eid==null&&o.mode!==4) Object.assign(o,AB(ctx,c,o.beh));
-  const P=ctx.P, A=rp(ctx,c,i-1,layer,rmul), B=rp(ctx,c,i,layer,rmul), R=Math.max(1,P.size*0.5);
-  const nearEnd=P.ends&&P.ends!=='round'&&(c.pts[i-1].u<6*R||(c.total!=null&&c.total-c.pts[i].u<6*R));
-  if(!nearEnd){ rope(ctx.S,A,B,o); return; }
-  const p0=c.pts[i-1], p1=c.pts[i], n=6; let prev=A, rm=rmul||1;   // finer steps where the end shape changes radius quickly
-  for(let k=1;k<=n;k++){ const t=k/n, u=p0.u+(p1.u-p0.u)*t; const q=k===n?B:{x:p0.x+(p1.x-p0.x)*t,y:p0.y+(p1.y-p0.y)*t,u,r:(p0.r+(p1.r-p0.r)*t)*capMod(ctx,c,u)*rm,base:A.base+(B.base-A.base)*t}; rope(ctx.S,prev,q,o); prev=q; } }
+  const P=ctx.P, rf=o.rf, A=rp(ctx,c,i-1,layer,rmul), B=rp(ctx,c,i,layer,rmul), R=Math.max(1,P.size*0.5), p0=c.pts[i-1], p1=c.pts[i];
+  if(rf){ A.r*=rf(A.u); B.r*=rf(B.u); }
+  const nearEnd=(P.ends&&P.ends!=='round'&&(p0.u<6*R||(c.total!=null&&c.total-p1.u<6*R)))||(P.taperIn>0&&p0.u<P.taperIn*10*R)||(P.taperOut>0&&c.total!=null&&c.total-p1.u<P.taperOut*10*R);
+  const dr=Math.abs(B.r-A.r)/Math.max(0.5,A.r,B.r);
+  if(!nearEnd&&dr<0.04){ rope(ctx.S,A,B,o); return; }
+  // where the width changes quickly, evaluate it on finer steps so the surface stays smooth (no rings)
+  const n=Math.min(10,Math.max(2,Math.ceil(dr/0.025))), rm=rmul||1, rb0=p0.rb==null?p0.r:p0.rb, rb1=p1.rb==null?p1.r:p1.rb; let prev=A;
+  for(let k=1;k<=n;k++){ const t=k/n, u=p0.u+(p1.u-p0.u)*t;
+    const q=k===n?B:{x:p0.x+(p1.x-p0.x)*t,y:p0.y+(p1.y-p0.y)*t,u,r:(rb0+(rb1-rb0)*t)*taperF(P,u,c.total)*capMod(ctx,c,u)*rm*(rf?rf(u):1),base:A.base+(B.base-A.base)*t};
+    rope(ctx.S,prev,q,o); prev=q; } }
 
-// 01 Glazed Ceramic
-defBrush({id:'ceramic',name:'Glazed Ceramic',desc:'Porcelain ropes with a lacquer highlight. Stroke ends are a drop or a wedge.',
-  defaults:{size:50,color:'#ebe8e1',ends:'round',mode:'merge',gloss:0.75,glaze:0.35,wvar:0.12,wfreq:0.8,taperIn:0.12,taperOut:0.12},
-  scene:{bg:'#151517',bgType:0,shadowStr:0.5},
-  ui:[ENDS,LAYER,{k:'color',l:'Glaze colour',t:'c',sw:['#ebe8e1','#f6f3ee','#1d2f5e','#2f6f73','#b8463a','#e8c45a','#141414','#9cb7a3']},{k:'gloss',l:'Lacquer',t:'r',min:0,max:1,st:.01},{k:'glaze',l:'Glaze pooling',t:'r',min:0,max:1,st:.01}],
+// 01 Glazed Ceramic — soft porcelain: broad flattened top, satin glaze, gentle ripples along the rope
+defBrush({polish:1,id:'ceramic',name:'Glazed Ceramic',desc:'Porcelain ropes with a lacquer highlight. Stroke ends are a drop or a wedge.',
+  defaults:{pool:0.4,thin:0.15,size:60,color:'#dcd8d0',ends:'round',mode:'merge',gloss:0.55,glaze:0.35,ripple:0.5,wvar:0.18,wfreq:0.7,taperIn:0.1,taperOut:0.1},
+  scene:{bg:'#151517',bgType:0,shadowStr:0.45,ao:0.7},
+  ui:[ENDS,LAYER,{k:'color',l:'Glaze colour',t:'c',sw:['#dcd8d0','#f2efe9','#1d2f5e','#2f6f73','#b8463a','#e8c45a','#141414','#9cb7a3']},{k:'gloss',l:'Lacquer',t:'r',min:0,max:1,st:.01},{k:'ripple',l:'Ripples',t:'r',min:0,max:1,st:.01},{k:'glaze',l:'Glaze pooling',t:'r',min:0,max:1,st:.01}],
   layer:P=>P.mode==='layer',
-  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer';
-    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.35,pf:q=>Math.pow(1-q*q,0.62),hs:0.8,mat:M.CERAMIC,c:cOf(P),gloss:P.gloss*255,grain:P.glaze*255,vr:128,
-      tex:(u,v,x,y,r)=>nz(x*1.1,y*1.1)*r*0.035},L); }});
+  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', rp_=P.ripple, sd=ctx.st.seed%97;
+    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.3,pf:q=>Math.sqrt(Math.max(0,1-q*q*q)),hs:0.55,mat:M.CERAMIC,qf:(q,x,y)=>q+nz(x*0.7,y*0.7)*0.05,c:cOf(P),gloss:P.gloss*255,grain:P.glaze*255,vr:128,
+      tex:(u,v,x,y,r)=>rp_*r*(0.06*nz(u*0.03+sd,v*1.2)+0.025*nz(u*0.09,v*2.5+sd))},L); }});
 // 02 Stone — a flat slab: smooth top, a narrow bevelled rim, grain on the lit slope, eroded outline
 defBrush({id:'stone',name:'Stone Brush',desc:'Lines fuse into a single rock, and the lit slope is covered in grain.',
-  defaults:{size:70,color:'#5f5e5c',rim:0.38,height:0.5,rough:0.6,grain:0.85,surface:0.25,taperIn:0.1,taperOut:0.1},
+  defaults:{pool:0.3,thin:0.2,size:72,color:'#5d5d5c',rim:0.42,height:0.5,rough:0.32,grain:0.85,surface:0.25,taperIn:0.1,taperOut:0.1},
   scene:{bg:'#e3dfd7',bgType:1,el:42,shadowStr:0.35,shadowLen:18},
   ui:[{k:'color',l:'Rock colour',t:'c',sw:['#5f5e5c','#3b3a38','#7d7a74','#8c7f6c','#a39d92','#2a2a2a']},{k:'rim',l:'Rim width',t:'r',min:0.05,max:0.8,st:.01},{k:'height',l:'Slab height',t:'r',min:0.1,max:1.5,st:.01},{k:'rough',l:'Eroded edge',t:'r',min:0,max:1.5,st:.01},{k:'grain',l:'Grain on slope',t:'r',min:0,max:1,st:.01},{k:'surface',l:'Surface texture',t:'r',min:0,max:1,st:.01}],
   seg(ctx,c,i){ const P=ctx.P, rim=P.rim, ro=P.rough, gr=P.grain, sf=P.surface, e0=1-rim;
     ropeSeg(ctx,c,i,{mode:0,pf:q=>q<=e0?1:Math.pow(1-(q-e0)/rim,1.3),hs:0.25*P.height,mat:M.STONE,c:cOf(P),grain:gr*255,gloss:10,
       qf:(q,x,y)=>q+(nz(x*1.6,y*1.6)*0.6+nz(x*5,y*5)*0.4)*0.16*ro,
-      tex:(u,v,x,y,r)=>{ const a=Math.abs(v); let t=sf*r*0.012*nz(x*2,y*2); if(a>e0-0.05) t+=(hash2(Math.round(x*1.6),Math.round(y*1.6))-0.5)*gr*r*0.09; return t; },
+      tex:(u,v,x,y,r)=>{ const a=Math.abs(v); let t=sf*r*0.004*nz(x*2,y*2); if(a>e0-0.05) t-=hash2(Math.round(x*1.6),Math.round(y*1.6))*gr*r*0.07; return t; },
       varf:(x,y)=>128+nz(x*.35+9,y*.35)*50},false); }});
-// 03 Kinetic Metal
-defBrush({id:'kinetic',name:'Kinetic Metal',desc:'Polished metal with an adjustable palette of shadow, midtone and highlight.',
-  defaults:{size:34,ends:'drop',mode:'merge',wvar:0.55,wfreq:1.1,pressure:0.5,taperIn:0.15},
-  scene:{bg:'#e2ded5',bgType:0,refl:0.7,shadowStr:0.45,kShadow:'#3c3d40',kMid:'#8d939b',kHigh:'#ffffff'},
-  ui:[ENDS,LAYER,{k:'kShadow',l:'Shadow',t:'c',scene:1,sw:['#3c3d40','#121212','#1b2a4a','#3a1a14','#0d2a22']},{k:'kMid',l:'Midtone',t:'c',scene:1,sw:['#8d939b','#8e8e8e','#6d7c9a','#b58b5a','#7fa08c']},{k:'kHigh',l:'Highlight',t:'c',scene:1,sw:['#ffffff','#fff3d6','#e6f4ff','#ffe1f0']},{k:'refl',l:'Band sharpness',t:'r',min:0,max:1,st:.01,scene:1}],
+// 03 Kinetic Metal — a flat dark core inside a wide, bright rounded bevel; bulges catch elongated glints
+defBrush({polish:0.6,id:'kinetic',name:'Kinetic Metal',desc:'Polished metal with an adjustable palette of shadow, midtone and highlight.',
+  defaults:{pool:1.1,thin:0.5,size:52,ends:'drop',mode:'merge',wvar:0.15,wfreq:1.1,pressure:0.5,taperIn:0.12,bevel:0.55,lumps:0.6},
+  scene:{bg:'#e2ded5',bgType:0,refl:0.6,shadowStr:0.45,kShadow:'#45484d',kMid:'#b7bec7',kHigh:'#ffffff'},
+  ui:[ENDS,LAYER,{k:'bevel',l:'Bevel width',t:'r',min:0.15,max:1,st:.01},{k:'lumps',l:'Bulge glints',t:'r',min:0,max:1,st:.01},{k:'kShadow',l:'Shadow',t:'c',scene:1,sw:['#45484d','#121212','#1b2a4a','#3a1a14','#0d2a22']},{k:'kMid',l:'Midtone',t:'c',scene:1,sw:['#b7bec7','#8e8e8e','#6d7c9a','#b58b5a','#7fa08c']},{k:'kHigh',l:'Highlight',t:'c',scene:1,sw:['#ffffff','#fff3d6','#e6f4ff','#ffe1f0']},{k:'refl',l:'Band sharpness',t:'r',min:0,max:1,st:.01,scene:1}],
   layer:P=>P.mode==='layer',
-  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer';
-    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.45,pf:q=>Math.pow(1-q*q,0.55),hs:0.7,mat:M.KMETAL,c:[255,255,255],gloss:255},L); }});
+  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', e0=1-P.bevel, lm=P.lumps, sd=ctx.st.seed%113;
+    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.35,pf:q=>{ const x=Math.max(0,(q-e0)/(1-e0)); return Math.max(0,1-Math.pow(x,1.6)); },hs:0.75,mat:M.KMETAL,c:[255,255,255],gloss:255,
+      tex:lm?(u,v,x,y,r)=>lm*r*0.4*Math.pow(Math.max(0,nz(u*0.03+sd,7.3)*1.6-0.1),1.5)*Math.max(0,1-Math.abs(v)*1.5):null},L); }});
 // 04 Embossing
-defBrush({id:'emboss',name:'Embossing',desc:'The shape is pressed out of a sheet: a rounded ridge or a sharp edge.',
-  defaults:{size:22,profile:'soft',dir:'raise',depth:0.7,pressure:0.4},
+defBrush({polish:0.6,id:'emboss',name:'Embossing',desc:'The shape is pressed out of a sheet: a rounded ridge or a sharp edge.',
+  defaults:{size:30,profile:'soft',dir:'raise',depth:0.8,pressure:0.4},
   scene:{bg:'#2b2b2c',bgType:2,shine:0.8},
-  ui:[{k:'profile',l:'Edge',t:'s',o:[['soft','Rounded'],['ridge','Sharp'],['rim','Outline']]},{k:'dir',l:'Direction',t:'s',o:[['raise','Emboss'],['press','Deboss']]},{k:'depth',l:'Depth',t:'r',min:0.1,max:1.5,st:.01}],
+  ui:[{k:'profile',l:'Edge',t:'s',o:[['soft','Rounded'],['ridge','Sharp'],['plateau','Plateau']]},{k:'dir',l:'Direction',t:'s',o:[['raise','Emboss'],['press','Deboss']]},{k:'depth',l:'Depth',t:'r',min:0.1,max:1.5,st:.01}],
   seg(ctx,c,i){ const P=ctx.P;
     ropeSeg(ctx,c,i,{mode:P.dir==='press'?2:0,pf:PF[P.profile]||PF.soft,hs:P.depth,mat:M.BG,c:[0,0,0],vr:128},false); }});
 
-// 05 Volumetric Paste
-defBrush({id:'paste',name:'Volumetric Paste',desc:'Ropes lie on top of each other or merge into one thick mass.',
-  defaults:{size:55,color:'#8f9193',mode:'merge',ridges:0,ridgeDepth:0.4,twist:0,gloss:0.75,wvar:0.3,wfreq:0.7,wrinkle:0.5},
+// 05 Volumetric Paste — flat-topped squeezed paste with long folds and creases, wet sheen
+defBrush({polish:0.8,id:'paste',name:'Volumetric Paste',desc:'Ropes lie on top of each other or merge into one thick mass.',
+  defaults:{pool:0.35,thin:0.15,size:58,color:'#8d9094',mode:'merge',ridges:0,ridgeDepth:0.4,twist:0,gloss:0.75,wvar:0.4,wfreq:0.7,folds:1.1},
   scene:{bg:'#151517',bgType:0,shadowStr:0.5},
-  ui:[LAYER,{k:'color',l:'Paste colour',t:'c',sw:['#8f9193','#e2cfa9','#f2efe8','#d9584a','#3f6fb5','#f2c14e','#6aa06a','#222222']},{k:'wrinkle',l:'Wrinkles',t:'r',min:0,max:1,st:.01},{k:'ridges',l:'Nozzle ridges',t:'r',min:0,max:10,st:1},{k:'ridgeDepth',l:'Ridge depth',t:'r',min:0,max:1,st:.01},{k:'twist',l:'Twist',t:'r',min:-1,max:1,st:.01},{k:'gloss',l:'Wet sheen',t:'r',min:0,max:1,st:.01}],
+  ui:[LAYER,{k:'color',l:'Paste colour',t:'c',sw:['#8d9094','#e2cfa9','#f2efe8','#d9584a','#3f6fb5','#f2c14e','#6aa06a','#222222']},{k:'folds',l:'Folds',t:'r',min:0,max:1.5,st:.01},{k:'ridges',l:'Nozzle ridges',t:'r',min:0,max:10,st:1},{k:'ridgeDepth',l:'Ridge depth',t:'r',min:0,max:1,st:.01},{k:'twist',l:'Twist',t:'r',min:-1,max:1,st:.01},{k:'gloss',l:'Wet sheen',t:'r',min:0,max:1,st:.01}],
   layer:P=>P.mode==='layer',
-  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', n=P.ridges, rd=P.ridgeDepth, tw=P.twist, wr=P.wrinkle;
-    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.7,pf:PF.paste,hs:1,mat:M.PASTE,c:cOf(P),gloss:P.gloss*255,vr:128,
-      tex:(u,v,x,y,r)=>(n?-rd*r*0.14*(0.5+0.5*Math.cos((v+u*tw*0.04)*Math.PI*n)):0)+wr*r*(0.07*nz(x*0.9,y*0.9)-0.05*Math.abs(nz(x*2.4+30,y*2.4)))},L); }});
-// 06 Foam — a low stripe when fast; slow, it thickens and is riddled with popped-bubble craters
-defBrush({id:'foam',name:'Foam Brush',desc:'Fast, and it lays a smooth stripe. Slow, and the line thickens and boils up into bubbles.',
-  defaults:{size:22,color:'#8a8a8a',boil:1,bubble:0.7,thicken:1.4,gloss:0.3,taperIn:0.1,taperOut:0.1},dwell:45,
-  scene:{bg:'#151517',bgType:0,shadowStr:0.4},
-  ui:[{k:'color',l:'Foam colour',t:'c',sw:['#8a8a8a','#f3f1ec','#fbe9d0','#dceaf2','#c9b48c']},{k:'boil',l:'Boil',t:'r',min:0,max:1.5,st:.01},{k:'bubble',l:'Bubble size',t:'r',min:0.1,max:1,st:.01},{k:'thicken',l:'Slow thickening',t:'r',min:0,max:2,st:.01},{k:'gloss',l:'Sheen',t:'r',min:0,max:1,st:.01}],
+  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', n=P.ridges, rd=P.ridgeDepth, tw=P.twist, fo=P.folds, sd=ctx.st.seed%89;
+    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.6,pf:PF.paste,hs:0.9,mat:M.PASTE,c:cOf(P),gloss:P.gloss*255,vr:128,
+      tex:(u,v,x,y,r)=>(n?-rd*r*0.14*(0.5+0.5*Math.cos((v+u*tw*0.04)*Math.PI*n)):0)+fo*r*(0.15*nz(u*0.03+sd,v*2.2)-0.2*Math.pow(Math.abs(nz(u*0.018+40,v*1.4+sd)),0.7)+0.08)},L); }});
+// 06 Foam — a crisp low stripe when fast; slow, it swells into a mass pitted with rimmed craters
+defBrush({polish:0.4,id:'foam',name:'Foam Brush',desc:'Fast, and it lays a smooth stripe. Slow, and the line thickens and boils up into bubbles.',
+  defaults:{size:22,color:'#8b8b8b',boil:1.6,bubble:0.8,thicken:1.4,gloss:0.3,taperIn:0.1,taperOut:0.1},dwell:45,
+  scene:{bg:'#151517',bgType:0,shadowStr:0.4,ao:0.8},
+  ui:[{k:'color',l:'Foam colour',t:'c',sw:['#8b8b8b','#f3f1ec','#fbe9d0','#dceaf2','#c9b48c']},{k:'boil',l:'Boil',t:'r',min:0,max:2,st:.01},{k:'bubble',l:'Bubble size',t:'r',min:0.1,max:1.5,st:.01},{k:'thicken',l:'Slow thickening',t:'r',min:0,max:2.5,st:.01},{k:'gloss',l:'Sheen',t:'r',min:0,max:1,st:.01}],
   start(ctx,c){ c.d.holes=[]; },
   seg(ctx,c,i){ const P=ctx.P, b=c.pts[i], col=cOf(P);
-    const slow=clamp(1-b.sp/0.45,0,1), mul=1+P.thicken*slow*1.3, hs=0.16+0.22*slow;
-    ropeSeg(ctx,c,i,{mode:0,pf:q=>q<0.7?1:Math.sqrt(Math.max(0,1-(q-0.7)/0.3)),hs,mat:M.FOAM,c:col,gloss:P.gloss*255,vr:128,
-      qf:(q,x,y)=>q+nz(x*2,y*2)*0.05},false,mul);
-    const rr=b.r*mul, n=Math.floor(P.boil*(0.15+slow*slow)*3+c.rng()*0.999);
-    for(let k=0;k<n;k++){ const an=c.rng()*6.283, d=Math.sqrt(c.rng())*rr*0.85, br=rr*(0.08+0.36*Math.pow(c.rng(),1.6)*P.bubble);
-      c.d.holes.push([b.x+Math.cos(an)*d,b.y+Math.sin(an)*d,br,b.u]); }
+    const slow=Math.pow(clamp(1-b.sp/0.9,0,1),1.2), mul=1+P.thicken*slow*1.8, hs=0.14+0.14*slow;
+    ropeSeg(ctx,c,i,{mode:0,pf:q=>q<0.78?1:Math.cos((q-0.78)/0.22*Math.PI/2),hs,mat:M.FOAM,c:col,gloss:P.gloss*255,vr:128,
+      qf:(q,x,y)=>q+nz(x*1.5,y*1.5)*0.05*slow},false,mul);
+    const rr=b.r*mul, n=Math.floor(P.boil*(0.25+4.5*slow*slow)+c.rng()*0.999);
+    for(let k=0;k<n;k++){ const an=c.rng()*6.283, d=Math.sqrt(c.rng())*rr*0.8, br=rr*(0.05+0.3*Math.pow(c.rng(),1.8)*P.bubble)*(0.5+slow*0.7);
+      c.d.holes.push([b.x+Math.cos(an)*d,b.y+Math.sin(an)*d,br,c.rng()]); }
   },
-  end(ctx,c){ const S=ctx.S; for(const [x,y,r] of c.d.holes||[]) carve(S,x,y,r,S.hAt(x,y)+r*0.25); }});
-// 07 Volumetric Foam
-defBrush({id:'vfoam',name:'Volumetric Foam',desc:'Ropes lie in layers and cast shadows on each other.',
-  defaults:{size:70,color:'#c9ced4',pores:0,soft:0.6,gloss:0.35,wvar:0.6,wfreq:0.75,taperIn:0.15,taperOut:0.15},
+  end(ctx,c){ const S=ctx.S; for(const [x,y,r,k] of c.d.holes||[]) crater(S,x,y,r,r*(0.35+k*0.75),0.16); }});
+// 07 Volumetric Foam — soft satin ropes that swell into linked bulges with narrow necks
+defBrush({polish:1,id:'vfoam',name:'Volumetric Foam',desc:'Ropes lie in layers and cast shadows on each other.',
+  defaults:{size:72,color:'#c8cdd3',pores:0,soft:0.6,gloss:0.35,links:0.75,linkLen:1,wvar:0.12,wfreq:0.75,taperIn:0.25,taperOut:0.3},
   scene:{shadowStr:0.75,shadowLen:60,bg:'#e3dfd7',bgType:0,ao:0.9},
-  ui:[{k:'color',l:'Foam colour',t:'c',sw:['#c9ced4','#f1efea','#e8e2d6','#cfe0ea','#f0d8cf','#2b2b2b']},{k:'soft',l:'Softness',t:'r',min:0,max:1,st:.01},{k:'gloss',l:'Satin sheen',t:'r',min:0,max:1,st:.01},{k:'pores',l:'Pores',t:'r',min:0,max:1,st:.01}],
+  ui:[{k:'color',l:'Foam colour',t:'c',sw:['#c8cdd3','#f1efea','#e8e2d6','#cfe0ea','#f0d8cf','#2b2b2b']},{k:'links',l:'Bulges',t:'r',min:0,max:1,st:.01},{k:'linkLen',l:'Bulge spacing',t:'r',min:0.4,max:3,st:.01},{k:'soft',l:'Softness',t:'r',min:0,max:1,st:.01},{k:'gloss',l:'Satin sheen',t:'r',min:0,max:1,st:.01},{k:'pores',l:'Pores',t:'r',min:0,max:1,st:.01}],
   layer:()=>true,
-  seg(ctx,c,i){ const P=ctx.P, po=P.pores;
-    ropeSeg(ctx,c,i,{mode:0,pf:q=>Math.pow(1-q*q,0.45+P.soft*0.5),hs:0.95,mat:M.FOAM,c:cOf(P),gloss:P.gloss*255,vr:128,
+  seg(ctx,c,i){ const P=ctx.P, po=P.pores, lk=P.links, ll=P.size*3.2*P.linkLen, sd=(ctx.st.seed%71)+c.k*3.1;
+    const rf=lk?u=>{ const ph=u/ll+0.9*n1(u*0.003+sd)+sd, s=0.5+0.5*Math.cos(ph*Math.PI*2), amp=0.8+0.45*n1(u*0.006+sd*2.3); return 1+lk*((0.34+0.86*Math.pow(s,0.7))*amp-1); }:null;
+    ropeSeg(ctx,c,i,{mode:0,pf:q=>Math.pow(1-q*q,0.45+P.soft*0.5),hs:0.95,mat:M.FOAM,c:cOf(P),gloss:P.gloss*255,vr:128,rf,
       tex:po?(u,v,x,y,r)=>-po*r*0.1*Math.max(0,nz(x*5,y*5)*1.6-0.2):null},true); }});
 // 08 Metallic Beads
 defBrush({id:'beads',name:'Metallic Beads',desc:'Beads are strung along the line: chrome, gold, steel, pearl, plastic.',
@@ -593,11 +648,11 @@ function clump(S,x,y,r,h,o,seed){ const ph=(seed*13.7)%200, k=1/Math.max(1,r); s
 function sandClumpSeg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], col=cOf(P);
   const slow=clamp(1-b.sp/0.5,0,1), rr=b.r, h=P.height*12, base={mat:M.SAND,c:col,grain:P.grainTex*255,gloss:15};
   const seg=Math.hypot(b.x-a.x,b.y-a.y)+0.6;
-  if(slow>0.25){ clump(S,b.x,b.y,rr*(0.55+0.55*slow*P.clump),h,Object.assign({vr:180},base,AP(ctx,c,b.u,0,0)),i); }
+  if(slow>0.25){ clump(S,b.x,b.y,rr*(0.55+0.55*slow*P.clump),h,Object.assign({vr:128},base,AP(ctx,c,b.u,0,0)),i); }
   const n=Math.round(P.density*seg*0.05*(0.5+(1-slow)*1.2)+c.rng()*0.7);
   for(let k=0;k<n;k++){ const t=c.rng(), sp=rr*(0.35+1.1*(1-slow)*P.spread);
     const x=a.x+(b.x-a.x)*t+gauss(c.rng)*sp*0.55, y=a.y+(b.y-a.y)*t+gauss(c.rng)*sp*0.55, r=rr*(0.22+0.45*Math.pow(c.rng(),1.3))*P.crumb;
-    clump(S,x,y,r,h,Object.assign({vr:170+c.rng()*25},base,AP(ctx,c,a.u+(b.u-a.u)*t,c.ra()*0.07,1,0)),i*31+k); }
+    clump(S,x,y,r,h,Object.assign({vr:120+c.rng()*16},base,AP(ctx,c,a.u+(b.u-a.u)*t,c.ra()*0.07,1,0)),i*31+k); }
 }
 // 21 Relief sand: fine grains heaped into relief
 function sandSeg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], col=cOf(P);
@@ -611,13 +666,13 @@ function sandSeg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], col
 }
 const SANDUI=[{k:'color',l:'Sand colour',t:'c',sw:['#c8b48c','#3b3833','#d9cdb4','#8a6a4a','#e8e2d6','#1f1e1c','#b9824f']},{k:'grain',l:'Grain size',t:'r',min:0.5,max:4,st:.05},{k:'density',l:'Density',t:'r',min:0.1,max:1.5,st:.01},{k:'clump',l:'Clump when slow',t:'r',min:0,max:1.5,st:.01},{k:'spread',l:'Scatter when fast',t:'r',min:0,max:1.5,st:.01},{k:'grainTex',l:'Sparkle',t:'r',min:0,max:1,st:.01},{k:'heap',l:'Heap under grains',t:'r',min:0,max:1.5,st:.01}];
 defBrush({id:'sand',name:'Sand Brush',desc:'Grains clump into a drop at a slow pace and scatter at a fast one.',
-  defaults:{size:60,color:'#f4f2ee',height:1.2,density:1,clump:1,spread:0.5,crumb:1,grainTex:0.15,taperIn:0.15,taperOut:0.15},dwell:35,
-  scene:{bg:'#dedad3',bgType:0,el:26,shadowStr:0.6,shadowLen:60,ambient:0.5,az:135,ao:0.3},
+  defaults:{size:40,color:'#e3e0da',height:1.7,density:1,clump:1,spread:0.5,crumb:1,grainTex:0.15,taperIn:0.15,taperOut:0.15},dwell:35,
+  scene:{bg:'#e1ded8',bgType:0,el:30,shadowStr:1,shadowLen:60,shadowSoft:0.05,ambient:0.5,az:130,ao:0.2},
   ui:[{k:'color',l:'Sand colour',t:'c',sw:['#f1efea','#d9cdb4','#c8b48c','#8a6a4a','#3b3833','#b9824f']},{k:'height',l:'Clump height',t:'r',min:0.1,max:2.5,st:.01},{k:'density',l:'Crumb density',t:'r',min:0,max:3,st:.01},{k:'crumb',l:'Crumb size',t:'r',min:0.2,max:2,st:.01},{k:'clump',l:'Clump when slow',t:'r',min:0,max:1.5,st:.01},{k:'spread',l:'Scatter when fast',t:'r',min:0,max:1.5,st:.01},{k:'grainTex',l:'Grain',t:'r',min:0,max:1,st:.01}],
   seg:sandClumpSeg});
 // 10 Stipple
 defBrush({id:'stipple',name:'Stipple Brush',desc:'An outline while you draw, then a fill of dots following the light and shade.',
-  defaults:{size:85,color:'#3a3a3a',dot:0.55,density:1.5,gamma:1.2,shade:0.35,outline:0,pressure:0.3,taperIn:0.2,taperOut:0.2},
+  defaults:{pool:0.25,thin:0.1,size:85,color:'#2e2e2e',dot:0.7,density:1.6,gamma:1.2,shade:0.35,outline:0,pressure:0.3,taperIn:0.2,taperOut:0.2},
   scene:{bg:'#e6e2da',bgType:1},
   ui:[{k:'color',l:'Ink',t:'c',sw:['#151515','#1c3a7a','#7a1c1c','#3a4a2a','#5a3a2a']},{k:'dot',l:'Dot size',t:'r',min:0.4,max:4,st:.05},{k:'density',l:'Density',t:'r',min:0.1,max:2,st:.01},{k:'gamma',l:'Shade contrast',t:'r',min:0.4,max:3,st:.01},{k:'shade',l:'Follow light',t:'r',min:0,max:1,st:.01},{k:'outline',l:'Outline weight',t:'r',min:0,max:4,st:.05}],
   seg(ctx,c,i){ const P=ctx.P; if(P.outline<=0) return; const a=c.pts[i-1], b=c.pts[i], o=Object.assign({mode:3,mat:M.INK,c:cOf(P)},AB(ctx,c,3)), w=P.outline*0.5;
@@ -644,8 +699,8 @@ defBrush({id:'stipple',name:'Stipple Brush',desc:'An outline while you draw, the
 function porousSeg(ctx,c,i){ const P=ctx.P, S=ctx.S, b=c.pts[i], mat=MATNAME[P.material]||M.MOSS, col=cOf(P);
   if(mat===M.MOSS){
     ropeSeg(ctx,c,i,{mode:1,k:P.size*0.4,pf:q=>q<0.75?1:1-(q-0.75)/0.25,hs:0.22*P.mass,mat:M.MOSS,c:col,gloss:10,grain:P.dry*255,vr:90,qf:(q,x,y)=>q+nz(x*1.3,y*1.3)*0.25+nz(x*4,y*4)*0.12,tex:(u,v,x,y,r)=>nz(x*5,y*5)*r*0.06},false);
-    const n=Math.floor(P.mass*(3+9*(1-P.tuft))*(Math.hypot(b.x-c.pts[i-1].x,b.y-c.pts[i-1].y)/ctx.sp+0.2)+c.rng());
-    for(let k=0;k<n;k++){ const an=c.rng()*6.283, d=Math.pow(c.rng(),0.6)*b.r, sr=b.r*(0.05+0.1*c.rng())*(0.5+P.tuft*1.6);
+    const n=Math.floor(P.mass*(4+10*(1-P.tuft))*(Math.hypot(b.x-c.pts[i-1].x,b.y-c.pts[i-1].y)/ctx.sp+0.2)+c.rng());
+    for(let k=0;k<n;k++){ const an=c.rng()*6.283, d=Math.pow(c.rng(),0.6)*b.r, sr=b.r*(0.03+0.06*c.rng())*(0.6+P.tuft*1.6);
       const x=b.x+Math.cos(an)*d, y=b.y+Math.sin(an)*d;
       sphere(S,x,y,sr,S.hAt(x,y)*0.8,Object.assign({mode:0,pf:PF.round,hs:0.9,mat:M.MOSS,c:col,gloss:10,grain:P.dry*255,vr:c.rng()*255,tex:(u,v,xx,yy,r)=>nz(xx*4,yy*4)*r*0.35},AP(ctx,c,b.u,c.ra()*0.08,1,0.03))); }
   } else {
@@ -657,23 +712,23 @@ function porousSeg(ctx,c,i){ const P=ctx.P, S=ctx.S, b=c.pts[i], mat=MATNAME[P.m
 function porousEnd(ctx,c){ const P=ctx.P, S=ctx.S, pts=c.pts, rng=c.rng2; if(!P.holes) return;
   for(let i=1;i<pts.length;i++){ const b=pts[i]; const n=P.holes*1.4*ctx.sp/Math.max(2,b.r*P.holeSize*0.9);
     let k=Math.floor(n)+(rng()<n%1?1:0);
-    while(k--){ const an=rng()*6.283, d=Math.sqrt(rng())*b.r*1.05, hr=b.r*P.holeSize*(0.25+0.55*rng()); const x=b.x+Math.cos(an)*d, y=b.y+Math.sin(an)*d; carve(S,x,y,hr,P.material==='moss'?S.hAt(x,y)*0.35+hr*0.12:S.hAt(x,y)+hr*0.35); } }
+    while(k--){ const an=rng()*6.283, d=(0.3+0.8*Math.sqrt(rng()))*b.r, hr=b.r*P.holeSize*(0.25+0.6*Math.pow(rng(),1.3)); const x=b.x+Math.cos(an)*d, y=b.y+Math.sin(an)*d; carve(S,x,y,hr,P.material==='moss'?S.hAt(x,y)*0.35+hr*0.12:S.hAt(x,y)+hr*0.35,0.4); } }
 }
 defBrush({id:'porous',name:'Porous Brush',desc:'A mass riddled with spherical cutouts, like moss or chopped metal.',
-  defaults:{size:70,material:'moss',color:'#3f5c21',holes:1.2,holeSize:0.32,mass:1,lump:0.5,tuft:0.25,dry:0.35,taperIn:0.1,taperOut:0.1},
+  defaults:{pool:0.45,thin:0.2,size:70,material:'moss',color:'#3a5a1c',holes:1.1,holeSize:0.36,mass:1,lump:0.5,tuft:0.2,dry:0.12,taperIn:0.1,taperOut:0.1},
   scene:{bg:'#e3dfd7',bgType:0,shadowStr:0.4},
   ui:[{k:'material',l:'Material',t:'s',o:[['moss','Moss'],['steel','Metal'],['chrome','Chrome'],['stone','Stone'],['clay','Clay']]},{k:'color',l:'Colour',t:'c',sw:['#55702c','#7a8a3a','#3d5226','#8c8880','#b8735a','#d8d4cc']},{k:'mass',l:'Mass thickness',t:'r',min:0.1,max:1.5,st:.01},{k:'holes',l:'Cutout density',t:'r',min:0,max:2,st:.01},{k:'holeSize',l:'Cutout size',t:'r',min:0.1,max:1,st:.01},{k:'lump',l:'Lumpiness',t:'r',min:0,max:1,st:.01},{k:'tuft',l:'Tuft size (moss)',t:'r',min:0,max:1,st:.01},{k:'dry',l:'Dryness (moss)',t:'r',min:0,max:1,st:.01}],
   seg:porousSeg,end:porousEnd});
 
 // 12 Barbed Wire
 defBrush({id:'barbed',name:'Barbed Wire',desc:'The line grows blade-like thorns that follow its curves on their own.',
-  defaults:{size:9,material:'silver',pitch:14,every:80,barbLen:40,barbW:4.5,style:'spike',angle:38,pressure:0.15,taperIn:0,taperOut:0},
+  defaults:{size:14,material:'silver',pitch:40,every:105,barbLen:36,barbW:14,style:'spike',angle:38,pressure:0.15,taperIn:0,taperOut:0},
   scene:{bg:'#151517',bgType:0,shadowStr:0.6},
   ui:[{k:'material',l:'Metal',t:'s',o:[['silver','Silver'],['steel','Steel'],['chrome','Chrome'],['bronze','Rust'],['gold','Gold']]},{k:'style',l:'Barb',t:'s',o:[['blade','Blade'],['spike','Spike'],['razor','Razor']]},{k:'pitch',l:'Twist pitch',t:'r',min:4,max:30,st:.5},{k:'every',l:'Barb spacing',t:'r',min:12,max:120,st:1},{k:'barbLen',l:'Barb length',t:'r',min:4,max:50,st:.5},{k:'barbW',l:'Barb width',t:'r',min:1,max:10,st:.1},{k:'angle',l:'Barb angle',t:'r',min:5,max:85,st:1}],
   spacing:P=>Math.min(1.2,P.pitch/9),
   start(ctx,c){ c.d.next=ctx.P.every*0.5; c.d.side=1; },
   seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], mat=MATNAME[P.material]||M.STEEL, col=mat===M.BRONZE?[150,80,50]:[200,200,200];
-    const wr=Math.max(0.6,b.r*0.55);
+    const wr=Math.max(0.6,b.r*0.48);
     for(const s of [0,Math.PI]){ const f=p=>{ const ph=p.u/P.pitch*Math.PI*2+s; return {x:p.x+p.nx*Math.cos(ph)*wr*0.95,y:p.y+p.ny*Math.cos(ph)*wr*0.95,r:wr,u:p.u,base:(1+Math.sin(ph))*wr*0.75}; };
       rope(S,f(a),f(b),Object.assign({mode:0,pf:PF.round,hs:1,mat,c:col,gloss:200,grain:mat===M.BRONZE?200:40},AB(ctx,c))); }
     while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1)); const tx=p.ny, ty=-p.nx; const tang=Math.atan2(ty,tx);
@@ -684,86 +739,87 @@ defBrush({id:'barbed',name:'Barbed Wire',desc:'The line grows blade-like thorns 
       const ap=AP(ctx,c,c.d.next,0.03,1,0.01); const o=Object.assign({mode:0,mat,c:col,gloss:230,grain:mat===M.BRONZE?200:40,shape:1,thick:0.55,curl:curl},ap,{bs:0.05});
       if(P.style==='blade'){ leaf(S,p.x,p.y,tang+side*an,P.barbLen,P.barbW,top*0.6,o); leaf(S,p.x,p.y,tang+Math.PI+side*an,P.barbLen,P.barbW,top*0.6,o); }
       else if(P.style==='razor'){ for(let k=0;k<2;k++){ const s2=k?-1:1; leaf(S,p.x,p.y,tang+s2*an*0.6,P.barbLen*1.3,P.barbW*1.3,top*0.5,o); leaf(S,p.x,p.y,tang+Math.PI+s2*an*0.6,P.barbLen*1.3,P.barbW*1.3,top*0.5,o);} }
-      else { for(const ang of [an,Math.PI-an,Math.PI+an,-an]){ const ex=p.x+Math.cos(tang+side*ang)*P.barbLen, ey=p.y+Math.sin(tang+side*ang)*P.barbLen; const N=6; let pr=null; for(let k=0;k<=N;k++){ const tt=k/N; const q={x:p.x+(ex-p.x)*tt,y:p.y+(ey-p.y)*tt,r:Math.max(0.35,P.barbW*0.45*(1-tt)),u:0,base:top*(1-tt)*0.7}; if(pr) rope(S,pr,q,Object.assign({mode:0,pf:PF.round,hs:1,mat,c:col,gloss:220},ap,ap.birth!=null?{birth:ap.birth+tt*0.05}:NOANIM)); pr=q; } } }
+      else { for(const ang of [an,Math.PI-an,Math.PI+an,-an]){ const ex=p.x+Math.cos(tang+side*ang)*P.barbLen, ey=p.y+Math.sin(tang+side*ang)*P.barbLen; const N=8; let pr=null; for(let k=0;k<=N;k++){ const tt=k/N; const q={x:p.x+(ex-p.x)*tt,y:p.y+(ey-p.y)*tt,r:Math.max(0.35,P.barbW*0.5*Math.pow(1-tt,1.2)),u:0,base:top*(1-tt)*0.8}; if(pr) rope(S,pr,q,Object.assign({mode:0,pf:PF.round,hs:1,mat,c:col,gloss:220},ap,ap.birth!=null?{birth:ap.birth+tt*0.05}:NOANIM)); pr=q; } } }
       for(let k=0;k<6;k++){ const ph=k/6*6.283; sphere(S,p.x+tx*(k-2.5)*wr*0.55,p.y+ty*(k-2.5)*wr*0.55,wr*1.05,wr*0.9,Object.assign({mode:0,pf:PF.round,hs:1,mat,c:col,gloss:200},AP(ctx,c,c.d.next,0.01+k*0.006,1))); }
       c.d.next+=P.every*(0.9+0.2*c.rng()); }
   }});
 
-// 13 Rose Thorns
-defBrush({id:'rose',name:'Rose Thorns',desc:'The stem grows curved thorns, alternating on both sides.',
-  defaults:{size:12,material:'silver',color:'#56683a',thorn:'#7c3b2c',thornSize:1.5,every:48,hook:0.55,gloss:0.35,pressure:0.3,taperIn:0.1,taperOut:0.1},
+// 13 Rose Thorns — a flat bevelled pewter ribbon; thorns are flat fins flush with it, alternating sides
+defBrush({polish:0.4,id:'rose',name:'Rose Thorns',desc:'The stem grows curved thorns, alternating on both sides.',
+  defaults:{size:24,material:'pewter',color:'#a5a5a5',thorn:'#a5a5a5',thornSize:1.8,every:85,hook:0.8,lean:0.75,gloss:0.35,pressure:0.3,taperIn:0.1,taperOut:0.1},
   scene:{bg:'#151517',bgType:0,shadowStr:0.55},
-  ui:[{k:'material',l:'Material',t:'s',o:[['silver','Silver'],['steel','Steel'],['gold','Gold'],['plant','Plant']]},{k:'color',l:'Stem (plant)',t:'c',sw:['#56683a','#3d4a2a','#6b4b33','#2a2a2a','#c9b48c']},{k:'thorn',l:'Thorns (plant)',t:'c',sw:['#7c3b2c','#56683a','#d8c8a8','#2a2a2a','#b02a2a']},{k:'thornSize',l:'Thorn size',t:'r',min:0.3,max:2.5,st:.01},{k:'every',l:'Spacing',t:'r',min:8,max:100,st:1},{k:'hook',l:'Hook',t:'r',min:-0.5,max:1.5,st:.01},{k:'gloss',l:'Gloss (plant)',t:'r',min:0,max:1,st:.01}],
-  start(ctx,c){ c.d.next=ctx.P.every*0.6; c.d.side=1; },
-  seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], plant=P.material==='plant', mat=plant?M.LEAF:(MATNAME[P.material]||M.SILVER);
-    const sc=plant?cOf(P):[230,230,230], tc=plant?hex2rgb(P.thorn):[230,230,230], gl=plant?P.gloss*255:220;
-    ropeSeg(ctx,c,i,{mode:0,pf:PF.round,hs:0.9,mat,c:sc,gloss:gl,vr:90,grain:plant?0:60,tex:(u,v,x,y,r)=>nz(u*0.3,v*6)*r*0.06},false);
+  ui:[{k:'material',l:'Material',t:'s',o:[['pewter','Pewter'],['silver','Silver'],['gold','Gold'],['plant','Plant']]},{k:'color',l:'Stem colour',t:'c',sw:['#a3a3a3','#56683a','#3d4a2a','#6b4b33','#c9b48c']},{k:'thorn',l:'Thorn colour',t:'c',sw:['#a3a3a3','#7c3b2c','#56683a','#d8c8a8','#b02a2a']},{k:'thornSize',l:'Thorn size',t:'r',min:0.3,max:2.5,st:.01},{k:'every',l:'Spacing',t:'r',min:10,max:160,st:1},{k:'lean',l:'Lean back',t:'r',min:0,max:1,st:.01},{k:'hook',l:'Hook',t:'r',min:-1,max:1.5,st:.01}],
+  start(ctx,c){ c.d.next=ctx.P.every*0.5; c.d.side=1; },
+  seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], plant=P.material==='plant', mat=plant?M.LEAF:P.material==='pewter'?M.STEEL:(MATNAME[P.material]||M.SILVER);
+    const gl=plant?P.gloss*255:220, gr=40, hs=0.5;
+    ropeSeg(ctx,c,i,{mode:0,pf:q=>q<0.5?1:Math.pow(Math.cos((q-0.5)/0.5*Math.PI/2),0.6),hs,mat,c:cOf(P),gloss:gl,vr:110,grain:gr,qf:(q,x,y)=>q+nz(x*2.5,y*2.5)*0.04,tex:(u,v,x,y,r)=>r*0.05*nz(x*2.2,y*2.2)+r*0.02*(hash2(Math.round(x*1.5),Math.round(y*1.5))-0.5)},false);
     while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1)); const side=c.d.side; c.d.side*=-1;
-      const tx=p.ny, ty=-p.nx, ox=p.nx*side, oy=p.ny*side, len=P.thornSize*Math.max(4,p.r)*3.2*(0.8+0.4*c.rng());
-      const N=10; let pr=null; const ap=AP(ctx,c,c.d.next,0.03,1,0.01);
-      for(let k=0;k<=N;k++){ const tt=k/N; const x=p.x+ox*(p.r*0.2+len*tt)-tx*P.hook*len*tt*tt+tx*len*0.25*(1-tt), y=p.y+oy*(p.r*0.2+len*tt)-ty*P.hook*len*tt*tt+ty*len*0.25*(1-tt);
-        const q={x,y,r:Math.max(0.3,p.r*1.05*P.thornSize*Math.pow(1-tt,1.4)),u:0,base:p.r*0.5*(1-tt)}; if(pr) rope(S,pr,q,Object.assign({mode:0,pf:PF.round,hs:0.8,mat,c:tc,gloss:gl,vr:60},ap,ap.birth!=null?{birth:ap.birth+tt*0.05}:NOANIM)); pr=q; }
+      const tang=Math.atan2(-p.nx,p.ny), ang=tang+side*(Math.PI/2+P.lean*1.1); // outward, leaning back toward the start
+      const L=P.thornSize*p.r*1.9*(0.85+0.3*c.rng()), Wd=P.thornSize*p.r*1.05;
+      leaf(S,p.x+p.nx*side*p.r*0.25,p.y+p.ny*side*p.r*0.25,ang,L,Wd,0,Object.assign({mode:0,mat,c:hex2rgb(P.thorn),gloss:gl,grain:gr,vr:110,shape:1,plat:p.r*hs,bev:p.r*0.4,curl:side*P.hook*0.25},AP(ctx,c,c.d.next,0.03,1,0.01),{bs:0.05}));
       c.d.next+=P.every*(0.75+0.5*c.rng()); }
   }});
 // 14 Laurel Wreath
 defBrush({id:'laurel',name:'Laurel Wreath',desc:'The branch grows leaves on both sides, and the material can be switched.',
-  defaults:{size:3.5,material:'leaf',color:'#4a6a26',leafLen:24,leafW:0.62,every:30,angle:55,arrange:'alt',curl:0.18,berries:0,pressure:0.3,taperIn:0.1,taperOut:0.1},
+  defaults:{size:5,material:'leaf',color:'#405321',leafLen:52,leafW:0.52,every:95,angle:50,arrange:'alt',curl:0.2,berries:0,pressure:0.3,taperIn:0.1,taperOut:0.1},
   scene:{bg:'#151517',bgType:0,shadowStr:0.5},
   ui:[{k:'material',l:'Material',t:'s',o:[['leaf','Leaf'],['gold','Gold'],['silver','Silver'],['bronze','Bronze'],['ceramic','Porcelain'],['glass','Glass']]},{k:'color',l:'Leaf colour',t:'c',sw:['#5e7b3c','#3f5a2a','#8a9a5a','#f2efe8','#2b2b2b','#a7c4b5']},{k:'arrange',l:'Leaves',t:'s',o:[['paired','Paired'],['alt','Alternate']]},{k:'leafLen',l:'Leaf length',t:'r',min:6,max:80,st:.5},{k:'leafW',l:'Leaf width',t:'r',min:0.1,max:0.6,st:.01},{k:'every',l:'Spacing',t:'r',min:4,max:60,st:.5},{k:'angle',l:'Leaf angle',t:'r',min:5,max:85,st:1},{k:'curl',l:'Curl',t:'r',min:-0.5,max:0.5,st:.01},{k:'berries',l:'Berries',t:'r',min:0,max:1,st:.01}],
   start(ctx,c){ c.d.next=ctx.P.every*0.4; c.d.side=1; },
-  seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], mat=MATNAME[P.material]||M.LEAF, col=cOf(P), gl=mat===M.LEAF?120:220;
+  seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], mat=MATNAME[P.material]||M.LEAF, col=cOf(P), gl=mat===M.LEAF?35:220;
     ropeSeg(ctx,c,i,{mode:0,pf:PF.round,hs:0.9,mat,c:mat===M.LEAF?col.map(v=>v*0.62):col,gloss:gl,vr:100},false);
     while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1)); const tang=Math.atan2(-p.nx,p.ny);
       let sc=0.82+0.3*c.rng(); sc*=Math.min(1,0.4+p.u/(P.leafLen*1.5)); if(c.total!=null) sc*=Math.min(1,0.35+(c.total-p.u)/(P.leafLen*1.5));
       const an=P.angle*Math.PI/180, sides=P.arrange==='paired'?[1,-1]:[c.d.side]; c.d.side*=-1;
-      for(const s of sides){ const L=P.leafLen*sc; leaf(S,p.x+p.nx*s*p.r*0.3,p.y+p.ny*s*p.r*0.3,tang+s*an,L,L*P.leafW*0.5,p.r*0.5,Object.assign({mode:0,mat,c:col,gloss:gl,vr:c.rng()*255,thick:0.5,rib:0.45,curl:-s*P.curl,grain:mat===M.GLASS?110:0},AP(ctx,c,p.u,0.025+(s<0?0.012:0),1,0.01),{bs:0.07})); }
+      for(const s of sides){ const L=P.leafLen*sc; leaf(S,p.x+p.nx*s*p.r*0.3,p.y+p.ny*s*p.r*0.3,tang+s*an,L,L*P.leafW*0.5,p.r*0.5,Object.assign({mode:0,mat,c:col,gloss:gl,vr:90+c.rng()*90,thick:0.38,rib:0.35,curl:-s*P.curl,grain:mat===M.GLASS?110:0},AP(ctx,c,p.u,0.025+(s<0?0.012:0),1,0.01),{bs:0.07})); }
       if(c.rng()<P.berries){ const s=c.rng()<.5?1:-1, d=p.r+P.leafLen*0.15; sphere(S,p.x+p.nx*s*d,p.y+p.ny*s*d,Math.max(1.5,P.leafLen*0.09),p.r*0.6,Object.assign({mode:0,pf:PF.round,hs:1,mat:mat===M.LEAF?M.PLASTIC:mat,c:mat===M.LEAF?[60,40,80]:col,gloss:230},AP(ctx,c,p.u,0.09,1,0.03))); }
       c.d.next+=P.every*(P.arrange==='paired'?1:0.5)*(0.75+0.5*c.rng()); }
   }});
 
-// 15 Modeling Clay
+// 15 Modeling Clay — soft, smoothed grey clay with finger grooves running along the stroke
 defBrush({id:'clay',name:'Modeling Clay',desc:'Sculpt a shape, then press in dents or build up volume on top.',
-  defaults:{size:95,color:'#a4a4a4',tool:'shape',strength:0.5,lumps:0.6,pressure:0.5,taperIn:0.12,taperOut:0.12},dwell:45,
-  scene:{bg:'#151517',bgType:0,shadowStr:0.5},
-  ui:[{k:'tool',l:'Tool',t:'s',o:[['shape','Shape'],['build','Build'],['dent','Dent'],['smooth','Smooth']]},{k:'color',l:'Clay colour',t:'c',sw:['#a4a4a4','#b9765a','#e6dfd2','#6f8f6f','#3f3a36','#c9a26b']},{k:'strength',l:'Strength',t:'r',min:0.05,max:1.5,st:.01},{k:'lumps',l:'Lumps & dents',t:'r',min:0,max:1.5,st:.01}],
+  defaults:{pool:0.35,thin:0.1,size:95,color:'#8e8e8e',tool:'shape',strength:0.5,lumps:0.8,grooves:0.6,soften:0.8,wvar:0.35,wfreq:0.8,pressure:0.5,taperIn:0.12,taperOut:0.12},dwell:45,
+  scene:{bg:'#151517',bgType:0,shadowStr:0.45,ao:0.8},
+  ui:[{k:'tool',l:'Tool',t:'s',o:[['shape','Shape'],['build','Build'],['dent','Dent'],['smooth','Smooth']]},{k:'color',l:'Clay colour',t:'c',sw:['#8e8e8e','#b9765a','#e6dfd2','#6f8f6f','#3f3a36','#c9a26b']},{k:'strength',l:'Strength',t:'r',min:0.05,max:1.5,st:.01},{k:'grooves',l:'Finger grooves',t:'r',min:0,max:1.5,st:.01},{k:'lumps',l:'Lumps',t:'r',min:0,max:1.5,st:.01},{k:'soften',l:'Soften',t:'r',min:0,max:1,st:.01}],
   seg(ctx,c,i){ const P=ctx.P, S=ctx.S, b=c.pts[i], o={mat:M.CLAY,c:cOf(P),gloss:30,vr:128};
-    if(P.tool==='shape'){ const lm=P.lumps; ropeSeg(ctx,c,i,{mode:1,k:P.size*0.9,pf:PF.flatten,hs:0.7,mat:M.CLAY,c:cOf(P),gloss:30,vr:128,tex:(u,v,x,y,r)=>lm*r*(0.12*nz(x*0.4,y*0.4)-0.14*Math.pow(Math.abs(nz(x*0.75+20,y*0.75)),1.6)+0.012*nz(x*1.6,y*1.6))},false); }
+    if(P.tool==='shape'){ const lm=P.lumps, gv=P.grooves, sd=ctx.st.seed%79;
+      ropeSeg(ctx,c,i,{mode:1,k:P.size*0.9,pf:q=>Math.pow(1-q*q,0.6),hs:0.6,mat:M.CLAY,c:cOf(P),gloss:30,vr:128,
+        tex:(u,v,x,y,r)=>r*(lm*0.18*nz(x*0.3+sd,y*0.3)+gv*0.12*nz(u*0.03+sd,v*1.8)-gv*0.1*Math.abs(nz(x*0.55,y*0.55+sd)))},false); }
     else if(P.tool==='build') gaussAdd(S,b.x,b.y,b.r*0.7,P.strength*b.r*0.06,o);
     else if(P.tool==='dent') press(S,b.x,b.y,b.r*0.55,P.strength*b.r*0.18);
     else blurArea(S,b.x,b.y,b.r,clamp(P.strength,0,1));
-  }});
-
+  },
+  end(ctx,c){ const P=ctx.P; if(P.tool!=='shape'||!P.soften) return; polishStroke(ctx.S,c.pts,Math.max(1,Math.round(P.size*0.5*ctx.S.q*0.11*P.soften))); }});
 // 16 Wooden Branch
 defBrush({id:'wood',name:'Wooden Branch',desc:'Bark-covered branches that taper and sprout twigs as you draw.',
-  defaults:{size:34,color:'#3a3128',taper:0.6,bark:1.1,twigs:0.6,twigLen:1.5,knots:0.3,leaves:false,leafColor:'#6a8a3e',pressure:0.3,taperIn:0,taperOut:0},
+  defaults:{size:36,color:'#463e33',lichen:0.6,taper:0.45,bark:1.1,twigs:0.6,twigLen:1.5,knots:0.3,leaves:false,leafColor:'#6a8a3e',pressure:0.3,taperIn:0,taperOut:0},
   scene:{bg:'#e3dfd7',bgType:1,shadowStr:0.55,shadowLen:40},
-  ui:[{k:'color',l:'Bark colour',t:'c',sw:['#6b4b33','#4a3a2c','#8a7a66','#2e2a26','#a88a66','#c9c2b4']},{k:'taper',l:'Taper',t:'r',min:0,max:1,st:.01},{k:'bark',l:'Bark depth',t:'r',min:0,max:1.5,st:.01},{k:'twigs',l:'Twigs',t:'r',min:0,max:1,st:.01},{k:'twigLen',l:'Twig length',t:'r',min:0.1,max:1.5,st:.01},{k:'knots',l:'Knots',t:'r',min:0,max:1,st:.01},{k:'leaves',l:'Leaves on twigs',t:'b'},{k:'leafColor',l:'Leaf colour',t:'c',sw:['#6a8a3e','#a8b04a','#c9772e','#9a3a2a']}],
+  ui:[{k:'color',l:'Bark colour',t:'c',sw:['#6b4b33','#4a3a2c','#8a7a66','#2e2a26','#a88a66','#c9c2b4']},{k:'taper',l:'Taper',t:'r',min:0,max:1,st:.01},{k:'bark',l:'Bark depth',t:'r',min:0,max:1.5,st:.01},{k:'lichen',l:'Lichen',t:'r',min:0,max:1,st:.01},{k:'twigs',l:'Twigs',t:'r',min:0,max:1,st:.01},{k:'twigLen',l:'Twig length',t:'r',min:0.1,max:1.5,st:.01},{k:'knots',l:'Knots',t:'r',min:0,max:1,st:.01},{k:'leaves',l:'Leaves on twigs',t:'b'},{k:'leafColor',l:'Leaf colour',t:'c',sw:['#6a8a3e','#a8b04a','#c9772e','#9a3a2a']}],
   start(ctx,c){ c.d.next=40+c.rng()*60; c.d.side=1; },
   seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], col=cOf(P), bk=P.bark, sd=ctx.st.seed%97;
     const tm=p=>{ let m=1; if(c.total!=null){ const f=p.u/Math.max(1,c.total); m=Math.max(0.12,1-P.taper*Math.pow(f,1.6)); m*=Math.min(1,Math.pow(Math.max(0,c.total-p.u)/(P.size*1.8),0.6)+0.08); } return m; };
     const A={x:a.x,y:a.y,u:a.u,r:a.r*tm(a),base:0}, B={x:b.x,y:b.y,u:b.u,r:b.r*tm(b),base:0};
     const tex=(u,v,x,y,r)=>bk*r*(0.2*nz(u*0.09+sd,v*10)+0.08*nz(u*0.5,v*28))-bk*r*0.1*Math.pow(Math.abs(nz(u*0.05+40,v*5)),0.5);
-    const wo={mode:0,pf:PF.round,hs:0.85,mat:M.WOOD,c:col,gloss:20,tex,varf:(x,y)=>128+nz(x*.3,y*.3)*100};
+    const wo={mode:0,pf:PF.round,hs:0.85,mat:M.WOOD,c:col,gloss:20,grain:P.lichen*255,tex,varf:(x,y)=>128+nz(x*.3,y*.3)*100};
     rope(S,A,B,Object.assign({},wo,AB(ctx,c)));
     while(P.twigs>0&&c.d.next<=b.u){ const side=c.d.side; c.d.side*=-1; const r0=B.r;
       const tang=Math.atan2(-b.nx*1,b.ny), ang=tang-side*(0.35+0.45*c.rng()), len=P.twigLen*(40+r0*5)*(0.6+0.6*c.rng()), bend=(c.rng()-0.5)*0.35;
       const ap=AP(ctx,c,b.u,0.01,0,0.01); if(c.rng()<P.knots) sphere(S,b.x+b.nx*side*r0*0.5,b.y+b.ny*side*r0*0.5,r0*0.45,r0*0.35,Object.assign({mode:1,k:r0*0.5,pf:PF.round,hs:0.8,mat:M.WOOD,c:col,gloss:20,tex},AP(ctx,c,b.u,0.02,1)));
       const N=10; let pr=null, x=b.x, y=b.y, an=ang;
-      for(let k=0;k<=N;k++){ const tt=k/N; const q={x,y,u:b.u+tt*len,r:Math.max(0.25,r0*0.5*Math.pow(1-tt,1.1)),base:r0*0.3*(1-tt)}; if(pr) rope(S,pr,q,Object.assign({},wo,ap,ap.birth!=null?{birth:ap.birth+tt*0.09}:NOANIM)); pr=q; x+=Math.cos(an)*len/N; y+=Math.sin(an)*len/N; an+=bend/N; }
+      for(let k=0;k<=N;k++){ const tt=k/N; const q={x,y,u:b.u+tt*len,r:Math.max(0.25,r0*0.5*Math.pow(1-tt,1.1)),base:r0*0.3*(1-tt)}; if(pr) rope(S,pr,q,Object.assign({},wo,ap,ap.birth!=null?{birth:ap.birth+tt*0.09}:NOANIM)); pr=q; if(k===5&&c.rng()<0.55){ const fs=c.rng()<0.5?1:-1, fl=len*(0.3+0.25*c.rng()); let fx=x,fy=y,fa=an+fs*(0.45+0.3*c.rng()),fp=null; for(let m=0;m<=6;m++){ const ft=m/6; const fq={x:fx,y:fy,u:0,r:Math.max(0.25,q.r*0.8*Math.pow(1-ft,1.1)),base:q.base}; if(fp) rope(S,fp,fq,Object.assign({},wo,ap,ap.birth!=null?{birth:ap.birth+0.045+ft*0.05}:NOANIM)); fp=fq; fx+=Math.cos(fa)*fl/6; fy+=Math.sin(fa)*fl/6; } } x+=Math.cos(an)*len/N; y+=Math.sin(an)*len/N; an+=bend/N; }
       if(P.leaves){ const lc=hex2rgb(P.leafColor), la=()=>Object.assign(AP(ctx,c,b.u,0.11,1,0.01),{bs:0.06}); for(const s of [1,-1]) leaf(S,x,y,an+s*0.5,len*0.45,len*0.12,1,Object.assign({mode:0,mat:M.LEAF,c:lc,gloss:110,vr:c.rng()*255,thick:0.5,rib:0.4,curl:s*0.1},la())); leaf(S,x,y,an,len*0.5,len*0.13,1,Object.assign({mode:0,mat:M.LEAF,c:lc,gloss:110,vr:c.rng()*255,thick:0.5,rib:0.4},la())); }
       c.d.next+=(320-P.twigs*260)*(0.6+0.8*c.rng()); }
   }});
 
 // 17 Liquid Metal
-defBrush({id:'liquid',name:'Liquid Metal',desc:'Molten chrome that pools and fuses where lines meet.',
-  defaults:{size:26,material:'chrome',fuse:0.8,ends:'drop',wvar:0.4,wfreq:0.8},
+defBrush({polish:1,id:'liquid',name:'Liquid Metal',desc:'Molten chrome that pools and fuses where lines meet.',
+  defaults:{pool:0.8,thin:0.35,size:26,material:'chrome',fuse:0.8,ends:'drop',wvar:0.4,wfreq:0.8},
   scene:{bg:'#d6d3cd',refl:0.55},
   ui:[{k:'material',l:'Metal',t:'s',o:METALS},ENDS,{k:'fuse',l:'Fuse',t:'r',min:0,max:1.5,st:.01}],
   seg(ctx,c,i){ const P=ctx.P; ropeSeg(ctx,c,i,{mode:1,k:P.size*(0.2+P.fuse*1.2),pf:PF.round,hs:0.9,mat:MATNAME[P.material]||M.CHROME,c:[255,255,255],gloss:255,beh:2},false); }});
 
 // 18 Glass
-defBrush({id:'glass',name:'Glass',desc:'Clear tubes that bend whatever lies beneath them.',
-  defaults:{size:30,color:'#bfe3dc',absorb:0.45,refract:0.7,mode:'layer',ends:'round'},
+defBrush({polish:1,id:'glass',name:'Glass',desc:'Clear tubes that bend whatever lies beneath them.',
+  defaults:{pool:0.4,thin:0.2,size:30,color:'#bfe3dc',absorb:0.45,refract:0.7,mode:'layer',ends:'round'},
   scene:{bgType:5,bg:'#ebe8e1'},
   ui:[LAYER,ENDS,{k:'color',l:'Tint',t:'c',sw:['#bfe3dc','#ffffff','#f3d9a8','#b9c9f0','#f0b9c9','#9ad1a0','#3a3a3a']},{k:'absorb',l:'Tint depth',t:'r',min:0,max:1,st:.01},{k:'refract',l:'Refraction',t:'r',min:0,max:1,st:.01}],
   layer:P=>P.mode==='layer',
@@ -778,7 +834,7 @@ defBrush({id:'moss',name:'Moss',desc:'Dense cushions of tiny tufts, with a few g
 
 // 20 Sculpted Metal
 defBrush({id:'sculpt',name:'Sculpted Metal',desc:'Chiselled facets and hammered planes, like cast bronze.',
-  defaults:{size:30,material:'bronze',facet:0.7,terraces:0,hammer:0.4,fuse:0.4},
+  defaults:{pool:0.3,thin:0.15,size:30,material:'bronze',facet:0.7,terraces:0,hammer:0.4,fuse:0.4},
   scene:{bg:'#e2ded6',refl:0.65},
   ui:[{k:'material',l:'Metal',t:'s',o:METALS},{k:'facet',l:'Chisel edge',t:'r',min:0,max:1,st:.01},{k:'terraces',l:'Terraces',t:'r',min:0,max:12,st:1},{k:'hammer',l:'Hammered',t:'r',min:0,max:1,st:.01},{k:'fuse',l:'Fuse',t:'r',min:0,max:1,st:.01}],
   seg(ctx,c,i){ const P=ctx.P, f=P.facet, hm=P.hammer;
@@ -837,15 +893,15 @@ float envL(vec3 R){
 }
 `;
 const FS_SHADE=COMMON_GLSL+`
-uniform vec3 uLightCol; uniform float uInt; uniform float uAmb; uniform float uShLen; uniform float uShStr; uniform float uAO;
-uniform vec3 uBg; uniform int uBgType; uniform int uTransp; uniform vec3 uKs; uniform vec3 uKm; uniform vec3 uKh; uniform sampler2D uBgImg; uniform int uHasImg; uniform vec3 uGlowCol; uniform float uGlow;
+uniform vec3 uLightCol; uniform float uInt; uniform float uAmb; uniform float uShLen; uniform float uShStr; uniform float uAO; uniform float uShSoft;
+uniform vec3 uBg; uniform int uBgType; uniform int uTransp; uniform vec3 uKs; uniform vec3 uKm; uniform vec3 uKh; uniform sampler2D uBgImg; uniform int uHasImg; uniform vec3 uGlowCol; uniform float uGlow; uniform float uMicro;
 float shadowAt(ivec2 p,float h0){
   if(uShStr<=0.) return 1.;
   vec2 d=normalize(uL.xy+vec2(1e-5)); float slope=uL.z/max(length(uL.xy),1e-3);
   float stp=max(1.,uShLen*uQ/20.); float s=1.;
   for(int i=1;i<=20;i++){ float dist=float(i)*stp; vec2 q=vec2(p)+vec2(d.x,d.y)*dist;
     float hs=Hs(ivec2(q))*uRelief; float ray=h0*uRelief+dist/uQ*slope; float df=hs-ray;
-    if(df>0.) s=min(s,1.-clamp(df/(1.5+dist/uQ*0.12),0.,1.)); }
+    if(df>0.) s=min(s,1.-clamp(df/(0.15+uShSoft*(2.2+dist/uQ*0.18)),0.,1.)); }
   return mix(1.,s,uShStr);
 }
 float aoAt(ivec2 p,float h0){
@@ -869,7 +925,12 @@ vec3 pal(float t){ t=clamp(t,0.,1.); float s=uRefl;
 void main(){
   ivec2 p=docP(); vec4 D=texelFetch(uD,p,0); float h=D.r; vec4 T=Tsel(p,D.g); vec4 X=Xsel(p,D.g);
   int m=int(T.a*255.+0.5); vec3 alb=T.rgb; float vr=X.r, ink=X.g*clamp(D.b,0.,1.), grn=X.b, gls=X.a;
-  vec3 N=normalAt(p); vec3 L=uL; vec3 V=vec3(0,0,1); vec3 Hh=normalize(L+V);
+  vec3 N=normalAt(p);
+  { vec2 fq=vec2(p)/uQ; // micro surface detail: fine irregularity so surfaces read as real material
+    float mic=uMicro*((m==3||m==4||m==5||m==6||m==19||m==20)?0.32:m==1?0.16:m==7?0.22:m==17?0.18:m==8?0.08:m==13?0.12:0.);
+    if(mic>0.){ float a=vnoise(fq*1.1), bx=vnoise(fq*1.1+vec2(0.6,0.)), by=vnoise(fq*1.1+vec2(0.,0.6)); float c=vnoise(fq*3.3), cx=vnoise(fq*3.3+vec2(0.4,0.)), cy=vnoise(fq*3.3+vec2(0.,0.4));
+      vec2 gr=vec2(bx-a,by-a)*2.2+vec2(cx-c,cy-c)*1.1; N=normalize(N+vec3(gr*mic*(0.3+0.7*(1.-N.z*N.z*0.5)),0.)); } }
+  vec3 L=uL; vec3 V=vec3(0,0,1); vec3 Hh=normalize(L+V);
   float ndl=max(dot(N,L),0.), ndh=max(dot(N,Hh),0.); vec3 R=reflect(-V,N);
   float sh=shadowAt(p,h), ao=aoAt(p,h); vec3 lc=uLightCol*uInt; float fres=pow(1.-max(N.z,0.),3.);
   vec2 fp=vec2(p)/uQ;
@@ -889,32 +950,34 @@ void main(){
   } else {
     float dif=ndl*sh; vec3 amb=vec3(uAmb)*ao;
     if(m==1){ // ceramic
-      vec3 c=alb*(1.-0.35*grn*(1.-ao)); col=c*(amb+dif*lc*0.85)+pow(ndh,mix(30.,260.,gls))*gls*1.5*sh*lc+fres*envL(R)*0.35*gls;
+      vec3 c=alb*(1.-0.35*grn*(1.-ao)); float w=max((dot(N,L)+0.25)/1.25,0.)*mix(1.,sh,0.8); col=c*(amb*0.9+w*lc*0.85)+(pow(ndh,mix(18.,90.,gls))*0.45+pow(ndh,mix(60.,320.,gls))*0.6)*gls*sh*lc+fres*envL(R)*0.22*gls;
     } else if(m==2){ // stone
-      vec3 c=alb*(0.85+0.3*vr); float g=hash(floor(fp*2.4)); float g2=hash(floor(fp*1.2)+7.); float slope=clamp((1.-N.z)*3.,0.,1.);
-      col=c*(amb+dif*lc); col+=((g-0.38)*0.9+(g2-0.5)*0.35)*grn*(0.05+0.9*slope)*(0.4+dif); col+=pow(ndh,20.)*0.05*sh;
+      vec3 c=alb*(0.9+0.2*vr)*(0.97+0.06*vnoise(fp*0.6)); float g=hash(floor(fp*2.3)); float g2=hash(floor(fp*1.1)+7.); float slope=smoothstep(0.006,0.03,1.-N.z);
+      col=c*(amb+mix(L.z,dif,0.45)*lc);
+      float spk=step(1.-0.55*grn*slope,g); col=mix(col,mix(vec3(0.84,0.83,0.81),col*0.7,step(0.8,g2)),spk*0.85);
+      col+=(g-0.5)*0.05;
     } else if(m==3){ // kinetic metal palette
       float fr=pow(clamp(1.-N.z,0.,1.),1.05); float e=envL(R);
-      float t=clamp(0.05+fr*1.25*(0.6+0.4*sh)*(0.7+0.3*ao)+0.3*(e-0.5)*fr+pow(ndh,70.)*0.9*sh,0.,1.); col=pal(t);
+      float sl=smoothstep(0.03,0.36,1.-N.z); vec2 ld=normalize(uL.xy+1e-4); float lit=max(0.,dot(normalize(N.xy+1e-5),ld)); float t=clamp(0.07+sl*(0.3+0.55*lit)*(0.65+0.35*sh)*(0.75+0.25*ao)+0.2*(e-0.5)*sl+pow(ndh,90.)*1.1*sh+smoothstep(0.75,1.,sl)*0.15+(hash(floor(fp*1.6))-0.5)*0.08*(1.-sl)+(vnoise(fp*vec2(0.35,0.5))-0.5)*0.14*(1.-sl),0.,1.); col=pal(t);
     } else if(m==4||m==5||m==6||m==19||m==20){
       float e=envL(R)*(0.6+0.4*sh)*(0.55+0.45*ao); float spk=pow(ndh,200.)*2.*sh;
-      vec3 tint=m==5?vec3(1.,0.77,0.34):m==6?vec3(0.74,0.77,0.8):m==19?vec3(0.86,0.55,0.32):m==20?vec3(0.93,0.94,0.97):vec3(1.);
-      if(m==6) e=mix(e,0.5,0.3); if(m==5||m==19){ e=pow(max(e,0.),1.35)*1.3; }
+      vec3 tint=m==5?vec3(1.,0.77,0.34):m==6?vec3(0.74,0.77,0.8):m==19?vec3(0.8,0.58,0.4):m==20?vec3(0.93,0.94,0.97):vec3(1.);
+      if(m==6) e=mix(e,0.5,0.3); if(m==5){ e=pow(max(e,0.),1.35)*1.3; } if(m==19){ e=pow(max(e,0.),1.2)*1.12; }
       col=tint*e*(m==4?1.:1.05)+spk*mix(tint,vec3(1),0.6)*lc;
       if(grn>0.5) { float r=vnoise(fp*0.8)*grn; col=mix(col,vec3(0.45,0.2,0.1)*(0.4+dif),r*0.8); }
     } else if(m==7){ col=alb*(amb+dif*lc*0.9)*(0.75+0.25*ao)+(pow(ndh,24.)*0.35+pow(ndh,90.)*0.9)*gls*sh*lc+fres*envL(R)*0.3*gls;
     } else if(m==8){ float w=max((dot(N,L)+0.45)/1.45,0.)*mix(1.,sh,0.85); vec3 c=alb*(0.96+0.04*vr);
       col=c*(amb*1.1+w*lc*0.8)+pow(ndh,mix(20.,180.,gls))*gls*0.9*sh*lc+vec3(0.05,0.04,0.03)*(1.-ndl);
     } else if(m==9){ vec3 c=alb*(0.78+0.44*vr); col=c*(amb+dif*lc); if(hash(fp*3.1)>1.-0.03*grn&&dif>0.35) col+=0.5*grn; col+=pow(ndh,30.)*0.1*sh;
-    } else if(m==11){ vec3 dk=alb*0.45, br=mix(alb*1.5,vec3(0.72,0.7,0.35),grn*0.8); vec3 c=mix(dk,br,vr)*(0.85+0.3*vnoise(fp*1.4));
+    } else if(m==11){ vec3 dk=alb*0.5, br=mix(alb*1.35,vec3(0.6,0.63,0.3),grn*0.7); vec3 c=mix(dk,br,vr)*(0.85+0.3*vnoise(fp*1.4));
       float w=max((dot(N,L)+0.35)/1.35,0.)*sh; col=c*(amb+w*lc)+pow(ndh,12.)*0.05*sh;
     } else if(m==13){ vec3 c=vec3(0.94,0.91,0.87); float w=max((dot(N,L)+0.2)/1.2,0.)*sh;
       vec3 ir=0.5+0.5*cos(6.283*(fres*1.4+vr*0.3+vec3(0.,0.33,0.67)));
       col=c*(amb+w*lc*0.85)+ir*0.12*(0.5+fres)+pow(ndh,40.)*0.6*sh*lc+envL(R)*0.12;
     } else if(m==14){ col=alb*(amb+dif*lc*0.9)+pow(ndh,70.)*0.9*sh*lc+fres*0.15;
-    } else if(m==15){ vec3 c=alb*(0.75+0.45*vr); col=c*(amb+dif*lc)*(0.7+0.3*ao)+pow(ndh,16.)*0.05*sh;
+    } else if(m==15){ vec3 c=alb*(0.75+0.45*vr); float lich=smoothstep(0.5,0.72,vnoise(fp*0.13)*0.6+vnoise(fp*0.5)*0.4)*grn; c=mix(c,vec3(0.6,0.61,0.55)*(0.75+0.5*hash(floor(fp*1.3))),lich*0.8); col=c*(amb+dif*lc)*(0.65+0.35*ao)+pow(ndh,16.)*0.05*sh;
     } else if(m==16){ vec3 c=alb*(0.82+0.3*vr); float w=max((dot(N,L)+0.2)/1.2,0.)*sh; col=c*(amb+w*lc)+pow(ndh,mix(10.,60.,gls))*0.5*gls*sh*lc+alb*0.12*(1.-ndl);
-    } else if(m==17){ col=alb*(amb+max((dot(N,L)+0.15)/1.15,0.)*sh*lc*0.95)+pow(ndh,14.)*0.08*sh+(vnoise(fp*2.5)-0.5)*0.03;
+    } else if(m==17){ col=alb*(amb*0.95+max((dot(N,L)+0.2)/1.2,0.)*mix(1.,sh,0.8)*lc*0.95)*(0.75+0.25*ao)+pow(ndh,22.)*0.14*sh;
     } else { col=alb*(amb+dif*lc); }
   }
   if(m!=0) col+=uGlowCol*D.a*uGlow;
@@ -1074,10 +1137,10 @@ class Renderer{
       tx(u,0,this.tD,'uD'); tx(u,1,this.tT,'uT'); tx(u,2,this.tX,'uX'); tx(u,4,this.tTu,'uTu'); tx(u,5,this.tXu,'uXu');
       gl.uniform2i(u.uSize,S.w,S.h); gl.uniform1f(u.uQ,S.q); gl.uniform3f(u.uL,L[0],L[1],L[2]); gl.uniform1f(u.uRelief,sc.relief); gl.uniform1f(u.uRefl,sc.refl); if(u.uShine) gl.uniform1f(u.uShine,sc.shine); return u; };
     u=bind(this.pS);
-    gl.uniform3fv(u.uLightCol,c3(sc.lightCol)); gl.uniform1f(u.uInt,sc.intensity); gl.uniform1f(u.uAmb,sc.ambient); gl.uniform1f(u.uShLen,sc.shadowLen); gl.uniform1f(u.uShStr,sc.shadowStr); gl.uniform1f(u.uAO,sc.ao);
+    gl.uniform3fv(u.uLightCol,c3(sc.lightCol)); gl.uniform1f(u.uInt,sc.intensity); gl.uniform1f(u.uAmb,sc.ambient); gl.uniform1f(u.uShLen,sc.shadowLen); gl.uniform1f(u.uShStr,sc.shadowStr); gl.uniform1f(u.uAO,sc.ao); gl.uniform1f(u.uShSoft,sc.shadowSoft==null?0.6:sc.shadowSoft);
     gl.uniform3fv(u.uBg,c3(sc.bg)); gl.uniform1i(u.uBgType,sc.bgType); gl.uniform1i(u.uTransp,sc.transparent?1:0); gl.uniform3fv(u.uKs,c3(sc.kShadow)); gl.uniform3fv(u.uKm,c3(sc.kMid)); gl.uniform3fv(u.uKh,c3(sc.kHigh));
     tx(u,3,this.tImg,'uBgImg'); gl.uniform1i(u.uHasImg,hasImg?1:0);
-    gl.uniform3fv(u.uGlowCol,c3(A?A.glowCol:'#000000')); gl.uniform1f(u.uGlow,A?A.glow:0);
+    gl.uniform3fv(u.uGlowCol,c3(A?A.glowCol:'#000000')); gl.uniform1f(u.uGlow,A?A.glow:0); gl.uniform1f(u.uMicro,sc.micro==null?1:sc.micro);
     gl.bindFramebuffer(gl.FRAMEBUFFER,this.fb); gl.viewport(0,0,S.w,S.h); gl.drawArrays(gl.TRIANGLES,0,3);
     gl.bindFramebuffer(gl.FRAMEBUFFER,null);
     u=bind(this.pP);
@@ -1350,12 +1413,12 @@ function muxMP4(w,h,fps,samples,avcC){
 // ================= APP =================
 const $=s=>document.querySelector(s);
 const DOCS={'4:3':[1200,900],'1:1':[1000,1000],'3:4':[900,1200],'16:9':[1280,720],'9:16':[720,1280]};
-const SCENE0={az:135,el:38,intensity:1,ambient:0.42,shine:0.6,refl:0.5,lightCol:'#ffffff',relief:1,shadowLen:40,shadowStr:0.55,ao:0.6,
+const SCENE0={az:135,el:38,intensity:1,ambient:0.42,shine:0.6,refl:0.5,lightCol:'#ffffff',relief:1,shadowLen:40,shadowStr:0.55,shadowSoft:0.6,ao:0.8,micro:1,
   bg:'#e9e6df',bgType:1,transparent:false,grain:0.05,grainAnim:false,point:0,pointMode:0,posterize:0,style:0,duo1:'#14213d',duo2:'#f5e9d0',sat:1,contrast:1,vignette:0,hue:0,
   kShadow:'#141414',kMid:'#8e8e8e',kHigh:'#ffffff',orbit:false,orbitSpeed:30};
-const SCENE_RESET=['bg','bgType','shadowStr','shadowLen','refl','shine','el'];
+const SCENE_RESET=['bg','bgType','shadowStr','shadowLen','shadowSoft','refl','shine','el','az','ao','ambient'];
 let doc={aspect:'4:3',strokes:[],scene:Object.assign({},SCENE0),nextId:1,anim:Object.assign({},ANIM0)};
-let ui={brush:'kinetic',eraser:false,params:{},sym:{mode:'none',n:6,cx:.5,cy:.5,guides:true},tool:'draw',tab:'brush',sel:null,quality:1.25,penOnly:false};
+let ui={brush:'kinetic',eraser:false,params:{},sym:{mode:'none',n:6,cx:.5,cy:.5,guides:true},tool:'draw',tab:'brush',sel:null,quality:1.5,penOnly:false};
 let S, R, bgImg=null, undoS=[], redoS=[];
 const sc=()=>doc.scene;
 function Lvec(s){ const a=s.az*Math.PI/180, e=s.el*Math.PI/180; return [Math.cos(a)*Math.cos(e),-Math.sin(a)*Math.cos(e),Math.sin(e)]; }
@@ -1461,8 +1524,12 @@ function brushControls(par,brushId,P,onChange,onCommit){
     else if(d.t==='b') ctlTog(par,d.l,get,v=>{ set(v); onCommit&&onCommit(); });
   }
 }
+function flowControls(par,P,onChange,onCommit){
+  const F=[['pool','Pooling',0,2,0.01],['thin','Thin between pools',0,1,0.01],['poolGap','Pool spacing',0.3,3,0.01],['wvar','Width variation',0,1,0.01],['wfreq','Variation scale',0.2,4,0.01],['pressure','Pencil pressure',0,1,0.01],['speedInf','Speed thinning',-1,1,0.01]];
+  for(const [k,l,a,b,s] of F) ctlSlider(par,l,()=>P[k],v=>{P[k]=v;onChange();},a,b,s,onCommit);
+}
 function dynamicsControls(par,P,onChange,onCommit){
-  const S_=[['size','Base width',1,200,0.5],['clean','Clean ends (hooks & blobs)',0,1,0.01],['taperIn','Taper start',0,1,0.01],['taperOut','Taper end',0,1,0.01],['pressure','Pencil pressure',0,1,0.01],['speedInf','Speed thinning',-1,1,0.01],['wvar','Width variation',0,1,0.01],['wfreq','Variation scale',0.2,4,0.01],['scatter','Scatter / wobble',0,1.5,0.01],['sfreq','Wobble frequency',0.2,5,0.01],['smooth','Smoothing',0,0.95,0.01]];
+  const S_=[['size','Base width',1,200,0.5],['clean','Clean ends (hooks & blobs)',0,1,0.01],['taperIn','Taper start',0,1,0.01],['taperOut','Taper end',0,1,0.01],['scatter','Scatter / wobble',0,1.5,0.01],['sfreq','Wobble frequency',0.2,5,0.01],['smooth','Smoothing',0,0.95,0.01]];
   for(const [k,l,a,b,s] of S_) ctlSlider(par,l,()=>P[k],v=>{P[k]=v;onChange();},a,b,s,onCommit);
 }
 
@@ -1478,6 +1545,7 @@ function renderBrush(){
   const s0=section(p,'Eraser'); s0.querySelector('h4').remove(); ctlSeg(s0,null,[['b','Brush'],['e','Eraser']],()=>ui.eraser?'e':'b',v=>{ ui.eraser=v==='e'; renderBrush(); tbState(); });
   if(ui.eraser){ const E=bp('eraser'); const se=section(p,'Eraser'); ctlSlider(se,'Size',()=>E.size,v=>{E.size=v;save();},2,200,1); ctlSlider(se,'Hardness',()=>E.hard,v=>{E.hard=v;save();},0,0.95,0.01); ctlSlider(se,'Pencil pressure',()=>E.pressure,v=>{E.pressure=v;save();},0,1,0.01); }
   const s1=section(p,'Material'); brushControls(s1,id,P,()=>save(),null);
+  const sf=section(p,'Flow & pooling'); flowControls(sf,P,()=>save(),null);
   const s2=section(p,'Stroke'); dynamicsControls(s2,P,()=>save(),null);
   ctlBtn(s2,'Reset brush to defaults',()=>{ ui.params[id]=Object.assign({},b.defaults); renderBrush(); save(); });
   const s3=section(p,'Symmetry'); symControls(s3);
@@ -1508,12 +1576,14 @@ function renderScene(){
   ctlSlider(a,'Shine',()=>s.shine,v=>{s.shine=v;needDraw=true;save();},0,2,0.01);
   ctlSlider(a,'Reflections',()=>s.refl,v=>{s.refl=v;needDraw=true;save();},0,1,0.01);
   ctlSlider(a,'Relief depth',()=>s.relief,v=>{s.relief=v;needDraw=true;save();},0.2,3,0.01);
+  ctlSlider(a,'Surface micro-detail',()=>s.micro,v=>{s.micro=v;needDraw=true;save();},0,3,0.01);
   ctlColor(a,'Light colour',['#ffffff','#fff1d6','#ffd9a8','#dbe8ff','#ffd6e6','#d9ffe6'],()=>s.lightCol,v=>{s.lightCol=v;needDraw=true;save();});
   ctlTog(a,'Orbit light continuously',()=>s.orbit,v=>{s.orbit=v;tbState();save();});
   ctlSlider(a,'Orbit speed (°/s)',()=>s.orbitSpeed,v=>{s.orbitSpeed=v;save();},-180,180,1);
   const b=section(p,'Shadows');
   ctlSlider(b,'Shadow length',()=>s.shadowLen,v=>{s.shadowLen=v;needDraw=true;save();},4,200,1);
   ctlSlider(b,'Shadow strength',()=>s.shadowStr,v=>{s.shadowStr=v;needDraw=true;save();},0,1,0.01);
+  ctlSlider(b,'Shadow softness',()=>s.shadowSoft,v=>{s.shadowSoft=v;needDraw=true;save();},0,1.5,0.01);
   ctlSlider(b,'Ambient occlusion',()=>s.ao,v=>{s.ao=v;needDraw=true;save();},0,1.5,0.01);
   const c=section(p,'Background');
   ctlSeg(c,'Surface',[[0,'Flat'],[1,'Paper'],[2,'Sheet'],[3,'Brushed'],[4,'Sand'],[5,'Grid']],()=>s.bgType,v=>{s.bgType=v;needDraw=true;save();},true);
@@ -1572,6 +1642,7 @@ function renderStrokes(){
     const ch=()=>{ if(!begun){ pushUndo(); begun=true; } replaceStroke(st.id,ns=>ns.P=Object.assign({},work)); schedRebuild(); save(); };
     const cm=()=>{ begun=false; renderStrokeRowColors(); };
     brushControls(s,st.brush,work,ch,cm);
+    const df=section(p,'Selected · flow & pooling'); flowControls(df,work,ch,cm);
     const d=section(p,'Selected · stroke'); dynamicsControls(d,work,ch,cm);
     const t=section(p,'Selected · transform'); const tf=()=>st.tf||{dx:0,dy:0,s:1,r:0};
     const setTf=(k,v)=>{ if(!begun){ pushUndo(); begun=true; } replaceStroke(st.id,ns=>{ const b0=bbox(st.raw); ns.tf=Object.assign({cx:(b0[0]+b0[2])/2,cy:(b0[1]+b0[3])/2},tf()); ns.tf[k]=v; }); schedRebuild(); save(); drawOverlay(); };
