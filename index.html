@@ -270,11 +270,12 @@ function rope(S,a,b,o){
   const x0=Math.max(0,Math.floor(Math.min(ax,bx)-rm)), x1=Math.min(W-1,Math.ceil(Math.max(ax,bx)+rm));
   const y0=Math.max(0,Math.floor(Math.min(ay,by)-rm)), y1=Math.min(Hh-1,Math.ceil(Math.max(ay,by)+rm));
   if(x0>x1||y0>y1) return;
-  const pf=o.pf||PF.round, hs=o.hs==null?1:o.hs, tex=o.tex, ink=o.mode===3, qs=o.qs, an=S.anim, bf=o.bf, b0=o.birth||0, bq=o.bq||0;
+  const pf=o.pf||PF.round, hs=o.hs==null?1:o.hs, tex=o.tex, fld=o.mode===5, ink=o.mode===3, qs=o.qs, an=S.anim, bf=o.bf, b0=o.birth||0, bq=o.bq||0;
   for(let y=y0;y<=y1;y++){ const py=y+.5-ay;
     for(let x=x0;x<=x1;x++){ const px=x+.5-ax;
       let t=(px*dx+py*dy)*inv; t=t<0?0:t>1?1:t;
       const qx=px-t*dx, qy=py-t*dy, d2=qx*qx+qy*qy, r=ar+(br-ar)*t;
+      if(fld){ if(d2>=r*r) continue; const i=y*W+x, qq=Math.sqrt(d2)/r, F=S.F; if(qq<F[i]){ if(F[i]>=9) S.FA.push(i); F[i]=qq; S.FU[i]=a.u+(b.u-a.u)*t; if(!S.FD[i]){ S.FD[i]=1; S.FL.push(i); } } continue; }
       if(ink){ const d=Math.sqrt(d2); if(d>r+0.5) continue; const qq=Math.min(1,d/Math.max(r,.01));
         const save=o.cov; if(!o.covf){ o.cov=(save==null?1:save)*clamp(r+0.5-d,0,1); }
         put(S,y*W+x,0,o,qq,(x+.5)/q,(y+.5)/q,an?(bf?bf(a.u+(b.u-a.u)*t):b0)+bq*qq:0); o.cov=save; continue; }
@@ -287,6 +288,17 @@ function rope(S,a,b,o){
       put(S,y*W+x,val,o,qq,xd,yd,an?(bf?bf(a.u+(b.u-a.u)*t):b0)+bq*qq:0);
     }}
   S.mark(x0,y0,x1,y1);
+}
+// ---- distance field for expensive ink brushes (cyanotype): each pixel's coverage is computed once, from its closest distance ----
+function fieldBegin(S){ const n=S.w*S.h; if(!S.F||S.F.length!==n){ S.F=new Float32Array(n).fill(9); S.FU=new Float32Array(n); S.FD=new Uint8Array(n); S.FL=[]; S.FA=[]; }
+  for(const i of S.FA){ S.F[i]=9; S.FD[i]=0; } S.FA.length=0; S.FL.length=0; }
+function fieldFlush(S,o){
+  const L=S.FL; if(!L||!L.length) return; const q=S.q, W=S.w, an=S.anim, oi=Object.assign({},o,{mode:3}); let x0=1e9,y0=1e9,x1=-1,y1=-1;
+  for(let k=0;k<L.length;k++){ const i=L[k]; S.FD[i]=0; const x=i%W, y=(i-x)/W, qq=S.F[i];
+    const bt=an?(o.bf?o.bf(S.FU[i]):(o.birth||0))+(o.bq||0)*qq:0;
+    put(S,i,0,oi,qq,(x+.5)/q,(y+.5)/q,bt);
+    if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y; }
+  L.length=0; if(x1>=0) S.mark(x0,y0,x1,y1);
 }
 function sphere(S,cx,cy,r,base,o){ const p={x:cx,y:cy,r:r,u:0,base:base}; rope(S,p,p,o); }
 
@@ -513,6 +525,7 @@ class StrokeRun{
       for(const c of this.copies){ c.pts.push(xfPt(c.m,tapered(scaleR(op,pf),this.P,null),this.cx,this.cy));
         if(this.n===0){ br.start&&br.start(ctx,c); } else br.seg(ctx,c,this.n); }
     }
+    if(br.flush) for(const c of this.copies) br.flush(ctx,c);
   }
   finishLive(){ this.S.restore(); this.full(true); }
   prep(){ // compute geometry of all copies without rendering
@@ -538,6 +551,7 @@ class StrokeRun{
       if(br.layer&&br.layer(ctx.P)) prepBase(ctx,c);
       br.start&&br.start(ctx,c);
       for(let i=1;i<c.pts.length;i++) br.seg(ctx,c,i);
+      br.flush&&br.flush(ctx,c);
       br.end&&br.end(ctx,c);
       if(br.polish){ const rpx=Math.max(1,Math.round(this.P.size*0.5*S.q*0.11*br.polish)); polishStroke(S,c.pts,rpx); }
     }
@@ -891,8 +905,11 @@ defBrush({id:'cyano',name:'Cyanotype',desc:'Sun-print silhouettes: pale shapes w
   defaults:{size:40,color:'#f6f5ec',bleed:0.55,fiber:0.8,halo:0.6,mottle:0.45,bubbles:0.4,density:1,pressure:0.4,taperIn:0.25,taperOut:0.3,wvar:0.35},
   scene:{bg:'#1f4a8a',bgType:6,shadowStr:0,ao:0,micro:0,grain:0.06},
   ui:[{k:'color',l:'Print colour',t:'c',sw:['#f2f1e6','#e4eef5','#c9dcef','#f4efe2']},{k:'density',l:'Exposure',t:'r',min:0.1,max:1,st:.01},{k:'bleed',l:'Bloom',t:'r',min:0,max:1,st:.01},{k:'fiber',l:'Feathered edge',t:'r',min:0,max:1,st:.01},{k:'halo',l:'Wash halo',t:'r',min:0,max:1,st:.01},{k:'mottle',l:'Mottling',t:'r',min:0,max:1,st:.01},{k:'bubbles',l:'Salt bubbles',t:'r',min:0,max:1,st:.01}],
+  start(ctx,c){ fieldBegin(ctx.S); c.d.fo=null; },
+  flush(ctx,c){ if(c.d.fo) fieldFlush(ctx.S,c.d.fo); },
   seg(ctx,c,i){ const P=ctx.P, bl=P.bleed, fb=P.fiber, ha=P.halo, mo=P.mottle, bu=P.bubbles, Rm=1+0.5*bl+0.9*ha, sd=(ctx.st.seed%97)*3.1;
-    ropeSeg(ctx,c,i,{mode:3,beh:5,mat:M.CYANO,c:cOf(P),cov:P.density,covf:(q,x,y)=>{
+    if(c.d.fo){ ropeSeg(ctx,c,i,c.d.fo,false,Rm); return; } // reuse the same settings object: noise functions are built once per stroke
+    ropeSeg(ctx,c,i,c.d.fo={mode:5,beh:5,mat:M.CYANO,c:cOf(P),cov:P.density,covf:(q,x,y)=>{
       const qc=q*Rm;
       const fr=Math.max(Math.abs(nz(x*3.2+sd,y*0.45)),Math.abs(nz(x*0.45,y*3.2+sd)));
       const e=qc+fb*(0.55*nz(x*0.1+sd,y*0.1)+0.35*nz(x*0.42,y*0.42+sd)+0.22*nz(x*1.6,y*1.6)+0.3*fr*fr);
@@ -1983,7 +2000,7 @@ function boot(){
   setTimeout(()=>{ if(!prevQueue) genPreviews(); },1500);
 }
 boot();
-window.__lab={get doc(){return doc;},set doc(d){doc=d;},ui,rebuild,draw,selectBrush,applyScene,get S(){return S;},BRUSH,BLIST,SCENE0,ANIM0,setQuality,rebuildAnim,animAt,drawAnimFrame,av,exportMP4,exportAlpha,makeZip,muxMP4,scrubTo,showTab,renderAnim};
+window.StrokeRun=StrokeRun; window.__lab={get doc(){return doc;},set doc(d){doc=d;},ui,rebuild,draw,selectBrush,applyScene,get S(){return S;},BRUSH,BLIST,SCENE0,ANIM0,setQuality,rebuildAnim,animAt,drawAnimFrame,av,exportMP4,exportAlpha,makeZip,muxMP4,scrubTo,showTab,renderAnim};
 
 }
 </script>
