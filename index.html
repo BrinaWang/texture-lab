@@ -164,7 +164,7 @@ select{font:inherit;width:100%;height:36px;border:1px solid var(--ink);border-ra
 <script>
 {
 // ================= ENGINE: noise, surface, primitives, path generation =================
-const M={BG:0,CERAMIC:1,STONE:2,KMETAL:3,CHROME:4,GOLD:5,STEEL:6,PASTE:7,FOAM:8,SAND:9,INK:10,MOSS:11,GLASS:12,PEARL:13,PLASTIC:14,WOOD:15,LEAF:16,CLAY:17,CYANO:18,BRONZE:19,SILVER:20,GSAND:21};
+const M={BG:0,CERAMIC:1,STONE:2,KMETAL:3,CHROME:4,GOLD:5,STEEL:6,PASTE:7,FOAM:8,SAND:9,INK:10,MOSS:11,GLASS:12,PEARL:13,PLASTIC:14,WOOD:15,LEAF:16,CLAY:17,CYANO:18,BRONZE:19,SILVER:20,GSAND:21,BLOOD:22,PETAL:23};
 const MATNAME={chrome:M.CHROME,gold:M.GOLD,steel:M.STEEL,pearl:M.PEARL,plastic:M.PLASTIC,bronze:M.BRONZE,silver:M.SILVER,glass:M.GLASS,ceramic:M.CERAMIC,leaf:M.LEAF,moss:M.MOSS,stone:M.STONE,clay:M.CLAY,wood:M.WOOD,kmetal:M.KMETAL};
 
 // ---- value-noise fbm, tileable 256 ----
@@ -223,8 +223,8 @@ class Surface{
     const d=this.d; if(!d) this.d=[x0,y0,x1,y1]; else { if(x0<d[0])d[0]=x0; if(y0<d[1])d[1]=y0; if(x1>d[2])d[2]=x1; if(y1>d[3])d[3]=y1; }
     const s=this.sb; if(s){ if(x0<s[0])s[0]=x0; if(y0<s[1])s[1]=y0; if(x1>s[2])s[2]=x1; if(y1>s[3])s[3]=y1; }
   }
-  snapH(){ this.H0.set(this.H); }
-  snapAll(){ this.H0.set(this.H); if(!this.T0){ this.T0=new Uint8Array(this.T.length); this.X0=new Uint8Array(this.X.length);} this.T0.set(this.T); this.X0.set(this.X); this.sb=[1e9,1e9,-1,-1]; }
+  snapH(){ this.H0.set(this.H); if(this.SU) this.SU.fill(-1e9); }
+  snapAll(){ this.H0.set(this.H); if(this.SU) this.SU.fill(-1e9); if(!this.T0){ this.T0=new Uint8Array(this.T.length); this.X0=new Uint8Array(this.X.length);} this.T0.set(this.T); this.X0.set(this.X); this.sb=[1e9,1e9,-1,-1]; }
   restore(){
     const s=this.sb; this.sb=null; if(!s||s[2]<0) return; const W=this.w;
     for(let y=s[1];y<=s[3];y++){ const a=y*W+s[0], b=y*W+s[2]+1;
@@ -242,21 +242,33 @@ function layerSwap(S,i,o,bt){
   if(e!==o.eid){ if(e!==0){ S.Hu[i]=S.H[i]; const j=i*4; S.Tu[j]=S.T[j];S.Tu[j+1]=S.T[j+1];S.Tu[j+2]=S.T[j+2];S.Tu[j+3]=S.T[j+3]; S.Xu[j]=S.X[j];S.Xu[j+1]=S.X[j+1];S.Xu[j+2]=S.X[j+2];S.Xu[j+3]=S.X[j+3]; S.B[i*2+1]=S.B[i*2]; } S.E[i]=o.eid||1; S.B[i*2]=bt+(o.beh||0)*4; }
   else { const cur=S.B[i*2], cb=cur-Math.floor(cur*0.25+1e-6)*4; if(bt<cb) S.B[i*2]=bt+(o.beh||0)*4; } // earliest arrival wins inside one element
 }
+function selfBlend(S,i,o){
+  if(!S.SU||S.SU.length!==S.H.length) S.SU=new Float32Array(S.H.length).fill(-1e9);
+  if(S.H[i]<=S.H0[i]+0.01) return false; const pu=S.SU[i]; return pu>-1e8&&Math.abs(o._u-pu)>o.sgap; }
 function put(S,i,val,o,qq,xd,yd,bt){
   const H=S.H; const cur=H[i]; let nv;
   switch(o.mode){
-    case 0: if(val<=cur) return; nv=val; break;
+    case 0: nv=val; if(o.sk&&selfBlend(S,i,o)){ const k=o.sk, d=Math.abs(cur-nv); if(d<k) nv=Math.max(cur,nv)+(k-d)*(k-d)/(4*k); } if(nv<=cur) return; break;
     case 1: { const b=S.H0[i], k=o.k, d=Math.abs(b-val); nv=d<k?Math.max(b,val)+(k-d)*(k-d)/(4*k):Math.max(b,val);
-      if(nv<=cur) return; if(val<b){ H[i]=nv; return; } break; }
+      if(o.sk&&selfBlend(S,i,o)){ const k2=o.sk, d2=Math.abs(cur-nv); if(d2<k2) nv=Math.max(cur,nv)+(k2-d2)*(k2-d2)/(4*k2); }
+      if(nv<=cur) return; if(val<b){ H[i]=nv; if(o.sk) S.SU[i]=o._u; return; } break; }
     case 2: nv=-val; if(nv>=cur) return; break;
     case 3: { const j=i*4, X=S.X, T=S.T; const cv=o.covf?o.covf(qq,xd,yd):1; if(cv<=0) return; const v=Math.min(255,cv*255*(o.cov==null?1:o.cov));
-      const same=T[j+3]===o.mat; if(v<=X[j+1]&&same) return;
+      const same=T[j+3]===o.mat;
+      if(o.mult!=null){ // layered print ink: each element is laid over the last like a translucent ink, darkening where they overlap
+        if(!S.EI||S.EI.length!==S.H.length) S.EI=new Int32Array(S.H.length);
+        if(S.EI[i]===o.iid){ if(v>X[j+1]) X[j+1]=v; return; }
+        if(S.anim) layerSwap(S,i,o,bt);
+        const cc=o.cf?o.cf(xd,yd):o.c, a=v/255, oa=same?X[j+1]/255:0, m=o.mult*oa;
+        for(let k=0;k<3;k++){ const old=same?T[j+k]:cc[k], blend=cc[k]*(1-m)+old*cc[k]/255*m; T[j+k]=Math.round(old+(blend-old)*a); }
+        X[j+1]=Math.round(255*(oa+a*(1-oa))); T[j+3]=o.mat; S.EI[i]=o.iid; return; }
+      if(v<=X[j+1]&&same) return;
       if(S.anim) layerSwap(S,i,o,bt);
       X[j+1]=Math.max(v, same?X[j+1]:0); T[j]=o.c[0];T[j+1]=o.c[1];T[j+2]=o.c[2];T[j+3]=o.mat; return; }
     case 4: { const f=sstep(1,o.hard==null?0.6:o.hard,qq); H[i]=cur*(1-f); if(f>0.5){ const j=i*4; S.T[j+3]=0; S.X[j+1]=0; if(S.anim){ S.B[i*2+1]=-1; S.Hu[i]=0; } } return; }
   }
   if(S.anim) layerSwap(S,i,o,bt);
-  H[i]=nv;
+  H[i]=nv; if(o.sk) S.SU[i]=o._u;
   const j=i*4, T=S.T, X=S.X; T[j]=o.c[0];T[j+1]=o.c[1];T[j+2]=o.c[2];T[j+3]=o.mat;
   X[j]=o.varf?o.varf(xd,yd):(o.vr==null?128:o.vr); X[j+1]=0; X[j+2]=o.grain||0; X[j+3]=o.af?o.af(qq,xd,yd):(o.gloss||0);
 }
@@ -285,6 +297,7 @@ function rope(S,a,b,o){
       let val=a.base+(b.base-a.base)*t + (o.pfx?o.pfx(qq,xd,yd):pf(qq))*rd*hs;
       if(tex){ const sg=(dx*py-dy*px)>=0?1:-1; val+=tex(a.u+(b.u-a.u)*t, sg*qq, xd, yd, rd); }
       if(qs){ const v=val/qs, f=v-Math.floor(v); val=(Math.floor(v)+sstep(0.82,1,f))*qs; }
+      if(o.sk) o._u=a.u+(b.u-a.u)*t;
       put(S,y*W+x,val,o,qq,xd,yd,an?(bf?bf(a.u+(b.u-a.u)*t):b0)+bq*qq:0);
     }}
   S.mark(x0,y0,x1,y1);
@@ -369,13 +382,29 @@ function leaf(S,x,y,ang,len,wid,base,o){
 class PathGen{
   constructor(P,br,seed){ this.P=P; this.sp=Math.max(0.6,br.spacing?br.spacing(P):P.size*(P.size>40?0.24:0.18)); this.out=[]; this.prev=null; this.carry=0; this.spd=0; this.lastT=0; this.seed=seed; this.dwell=br.dwell||0; }
   push(p){
-    // pressure: ignore Pencil dropouts (0 for one event) and smooth over ~40 ms so width never jumps
+    // pressure: ignore Pencil dropouts (0 for one event) and smooth over ~70 ms so width never jumps
     let pr=p.p;
     if(this.pe==null) this.pe=pr<0.03?0.5:pr;
-    else { if(pr<0.03) pr=this.pe; const dt0=Math.max(1,p.t-this.prev.t); this.pe+=(pr-this.pe)*(1-Math.exp(-dt0/70)); }
-    p={x:p.x,y:p.y,p:this.pe,t:p.t};
-    if(!this.prev){ this.prev=p; this.emit(p.x,p.y,p.p,p.t); this.carry=this.sp; return; }
-    const a=this.prev, dx=p.x-a.x, dy=p.y-a.y, L=Math.hypot(dx,dy), dt=Math.max(1,p.t-a.t);
+    else { if(pr<0.03) pr=this.pe; const dt0=Math.max(1,p.t-this.lastRaw.t); this.pe+=(pr-this.pe)*(1-Math.exp(-dt0/70)); }
+    p={x:p.x,y:p.y,p:this.pe,t:p.t}; this.lastRaw=p;
+    // the path is a smooth curve through the input points (Hermite with chord-scaled tangents), so sparse input never shows corners
+    const q=this.q||(this.q=[]);
+    if(q.length&&Math.hypot(p.x-q[q.length-1].x,p.y-q[q.length-1].y)<0.05){ q[q.length-1]=p; if(q.length===1) return; if(this.dwell) this._lin(p); return; }
+    q.push(p); if(q.length>4) q.shift();
+    if(q.length===1){ this.prev=p; this.emit(p.x,p.y,p.p,p.t); this.carry=this.sp; return; }
+    if(q.length>=3) this._curve(q[q.length-3],q[q.length-2],q[q.length-1],q.length>=4?q[q.length-4]:null);
+  }
+  _curve(p1,p2,p3,p0){ // emits the piece p1→p2, shaped by its neighbours p0 and p3
+    if(!p0) p0=p1; const d01=Math.hypot(p1.x-p0.x,p1.y-p0.y), d12=Math.hypot(p2.x-p1.x,p2.y-p1.y), d23=Math.hypot(p3.x-p2.x,p3.y-p2.y);
+    if(d12<1e-6){ this._lin(p2); return; }
+    const k1=d01+d12>1e-6?d12/(d01+d12):0.5, k2=d12+d23>1e-6?d12/(d12+d23):0.5;
+    const m1x=(p2.x-p0.x)*k1, m1y=(p2.y-p0.y)*k1, m2x=(p3.x-p1.x)*k2, m2y=(p3.y-p1.y)*k2;
+    const n=Math.max(1,Math.min(48,Math.ceil(d12/Math.max(1.2,this.sp*0.6))));
+    for(let k=1;k<=n;k++){ const t=k/n, t2=t*t, t3=t2*t, h00=2*t3-3*t2+1, h10=t3-2*t2+t, h01=-2*t3+3*t2, h11=t3-t2;
+      this._lin({x:h00*p1.x+h10*m1x+h01*p2.x+h11*m2x, y:h00*p1.y+h10*m1y+h01*p2.y+h11*m2y, p:p1.p+(p2.p-p1.p)*t, t:p1.t+(p2.t-p1.t)*t}); }
+  }
+  _lin(p){
+    const a=this.prev, dx=p.x-a.x, dy=p.y-a.y, L=Math.hypot(dx,dy), dt=Math.max(0.25,p.t-a.t);
     this.spd+=(L/dt-this.spd)*Math.min(1,dt/70);
     let s=this.carry;
     while(s<=L){ const t=s/L; this.emit(a.x+dx*t,a.y+dy*t,a.p+(p.p-a.p)*t,a.t+(p.t-a.t)*t); s+=this.sp; }
@@ -383,7 +412,8 @@ class PathGen{
     if(this.dwell&&p.t-this.lastT>this.dwell){ this.emit(p.x,p.y,p.p,p.t); this.carry=this.sp; }
     this.prev=p;
   }
-  finish(){ // make sure the stroke reaches exactly where the pen lifted
+  finish(){ // complete the last curve piece and reach exactly where the pen lifted
+    const q=this.q; if(q&&q.length>=2){ const n=q.length; this._curve(q[n-2],q[n-1],q[n-1],n>=3?q[n-3]:null); this.q=[q[n-1]]; }
     const a=this.prev, l=this.out[this.out.length-1]; if(a&&l&&Math.hypot(a.x-l.cx,a.y-l.cy)>this.sp*0.15) this.emit(a.x,a.y,a.p,a.t); }
   emit(x,y,pr,t){
     const o=this.out, last=o[o.length-1], P=this.P; let u=0,nx=0,ny=0;
@@ -908,11 +938,11 @@ defBrush({id:'sculpt',name:'Sculpted Metal',desc:'Chiselled facets and hammered 
       qs:P.terraces?P.size*0.5/P.terraces:0, tex:hm?(u,v,x,y,r)=>-hm*r*0.08*Math.abs(nz(x*3,y*3)):null},false); }});
 
 // 21 Relief Sand — ropes made of salt-and-pepper grains, raised and lit, overlapping strokes cast shadows
-defBrush({polish:0.35,id:'rsand',name:'Dark Relief Sand',desc:'Dark grains heaped into raised relief, lit from the side.',
+defBrush({polish:0.75,id:'rsand',name:'Dark Relief Sand',desc:'Dark grains heaped into raised relief, lit from the side.',
   defaults:{size:36,color:'#d2d2d2',dark:0.16,blend:0.6,grain:0.65,texture:0.3,profile:'bevel',bevelW:0.55,bevelCurve:1.4,height:1.3,ridge:0.55,mode:'layer',taperIn:0.15,taperOut:0.15},
   scene:{bg:'#09090b',bgType:0,az:135,el:32,shadowStr:0.9,shadowLen:40,shadowSoft:0.3,ao:0.7,ambient:0.3},
   ui:[LAYER,{k:'profile',l:'Profile',t:'s',o:[['bevel','Bevel'],['rope','Rope'],['ridge','Ridge']]},{k:'bevelW',l:'Bevel width',t:'r',min:0.05,max:1,st:.01},{k:'bevelCurve',l:'Bevel curve (cove ← straight → rounded)',t:'r',min:-1,max:2,st:.01},{k:'ridge',l:'Ridge sharpness (ridge profile)',t:'r',min:0,max:1,st:.01},{k:'height',l:'Height',t:'r',min:0.1,max:2,st:.01},{k:'color',l:'Light grain colour',t:'c',sw:['#dcdcdc','#d9cdb4','#c8b48c','#b9c9f0','#f0b9c9']},{k:'dark',l:'Dark grain brightness',t:'r',min:0,max:0.8,st:.01},{k:'blend',l:'Colour blend (light share)',t:'r',min:0,max:1,st:.01},{k:'grain',l:'Grain size',t:'r',min:0.4,max:3,st:.01},{k:'texture',l:'Grain texture',t:'r',min:0,max:1,st:.01}],
-  layer:P=>P.mode==='layer',
+  layer:P=>P.mode==='layer', spacing:P=>Math.max(0.8,P.size*0.12),
   seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', gs=P.grain, tx=P.texture, rg=P.ridge, w=clamp(P.bevelW,0.03,1), cv=P.bevelCurve;
     let pf, hs;
     if(P.profile==='rope'){ pf=q=>Math.sqrt(Math.max(0,1-q*q)); hs=0.95*P.height; }
@@ -923,7 +953,7 @@ defBrush({polish:0.35,id:'rsand',name:'Dark Relief Sand',desc:'Dark grains heape
       pf=q=>{ if(q<=1-ww) return 1; const t=Math.min(1,(q-(1-ww))/ww), straight=1-t;
         return cc>=0 ? straight+(Math.sqrt(Math.max(0,1-t*t))-straight)*cc : straight+(Math.pow(1-t,2.6)-straight)*(-cc); };
       hs=0.55*P.height; }
-    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.5,pf,hs,mat:M.GSAND,c:cOf(P),vr:Math.round(P.dark*255),grain:Math.round(P.blend*255),gloss:Math.round(clamp(gs/3,0,1)*255),
+    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.5,sk:P.size*0.45*hs,sgap:P.size*1.6,pf,hs,mat:M.GSAND,c:cOf(P),vr:Math.round(P.dark*255),grain:Math.round(P.blend*255),gloss:Math.round(clamp(gs/3,0,1)*255),
       tex:tx?(u,v,x,y,r)=>tx*0.3*(hash2(Math.floor(x/gs*1.2),Math.floor(y/gs*1.2))-0.5):null},L); }});
 
 // 22 Cyanotype — sun print: blooming feathered edges, a soft wash halo, mottled whites and salt-crystal bubbles
@@ -947,6 +977,187 @@ defBrush({id:'cyano',name:'Cyanotype',desc:'Sun-print silhouettes: pale shapes w
       const reach=clamp((Rm-qc)/Math.max(0.01,Rm-0.75),0,1);
       const h=ha*0.5*Math.pow(reach,1.3)*(0.5+0.5*(0.5+0.5*nz(x*0.3,y*0.3+sd)))*(0.6+0.8*fr);
       return Math.max(cv,h); }},false,Rm); }});
+// 23 Blood — glossy viscous liquid: pools where slow, drips run downward, realistic splats (blob + spines + flung droplets)
+const LIQ=q=>Math.pow(Math.max(0,1-q*q*q),0.5);
+function teardrop(S,hx,hy,ang,r,len,hs,o){ // head at (hx,hy), tail trailing back along ang
+  const tx=hx-Math.cos(ang)*len, ty=hy-Math.sin(ang)*len, N=Math.max(2,Math.ceil(len/Math.max(1,r*0.6))); let pr=null;
+  for(let k=0;k<=N;k++){ const t=k/N; const q={x:tx+(hx-tx)*t,y:ty+(hy-ty)*t,u:0,r:Math.max(0.4,r*(0.25+0.75*Math.pow(t,0.6))),base:0}; if(pr) rope(S,pr,q,Object.assign({mode:1,k:r*0.8,pf:LIQ,hs},o)); pr=q; }
+}
+function splat(ctx,c,cx,cy,R,dir,bias,base,hs,u){
+  const P=ctx.P, S=ctx.S, rng=c.rng, ph=(cx*0.37+cy*0.71)%97, irr=P.irregular;
+  const ap=d=>AP(ctx,c,u,d,1,0.01);
+  // main blob: an irregular, lobed pool
+  // blood spreads into a film of roughly constant thickness, whatever the splat's size
+  const film=Math.max(0.8,P.thick*3.2), hb=Math.min(hs,film/Math.max(1,R*0.45));
+  const N3=(x,y)=>0.6*nz((x-cx)/R*22+ph,(y-cy)/R*22)+0.28*nz((x-cx)/R*60+ph,(y-cy)/R*60)+0.12*nz((x-cx)/R*150,(y-cy)/R*150+ph);
+  const blobQ=(q,x,y)=>q*1.6+irr*N3(x,y)*0.9;                  // drawn at 1.5R so the outline can bulge outward as well as in
+  const POOL=q=>Math.pow(Math.max(0,1-q),0.55)*(0.55+0.45*(1-q*q)); // thin bright edges, deeper darker middle
+  sphere(S,cx,cy,R*1.6,0,Object.assign({mode:1,k:R*0.5,pf:POOL,hs:film*1.6/(R*1.6),qf:blobQ},base,ap(0)));
+  const nl=3+Math.floor(rng()*5*irr+0.5);
+  for(let k=0;k<nl;k++){ const a=rng()*6.283, d=R*(0.6+0.5*rng()), rr=R*(0.15+0.35*rng()); sphere(S,cx+Math.cos(a)*d,cy+Math.sin(a)*d,rr*1.4,0,Object.assign({mode:1,k:R*0.4,pf:POOL,hs:Math.min(hs,film*1.2/(rr*1.4)),qf:(q,x,y)=>q*1.4+irr*N3(x,y)*0.6},base,ap(0.01))); }
+  // spines: tapering arms flung out from the blob, often ending in a bead
+  const ns=Math.round(P.spikes*(7+14*rng()));
+  for(let k=0;k<ns;k++){ let a=rng()*6.283; if(bias>0){ let da=a-dir; while(da>Math.PI) da-=6.283; while(da<-Math.PI) da+=6.283; a=dir+da*(1-bias*0.75); }
+    const L=R*P.spikeLen*(0.15+1.05*Math.pow(rng(),2.4)), w0=R*(0.06+0.16*rng()), N=7; let pr=null; const bend=(rng()-0.5)*0.9, kink=rng()*6.283;
+    for(let m=0;m<=N;m++){ const t=m/N, an=a+bend*t+0.15*Math.sin(t*5+kink); const d=R*(0.6+0.25*rng())+L*t; const q={x:cx+Math.cos(an)*d,y:cy+Math.sin(an)*d,u:0,r:Math.max(0.5,w0*(1-0.8*Math.pow(t,0.8))),base:0};
+      if(pr) rope(S,pr,q,Object.assign({mode:1,k:w0,pf:LIQ,hs:hb},base,ap(0.015+t*0.03))); pr=q; }
+    if(rng()<0.5){ const br=w0*(0.7+0.9*rng()), gd=R*0.6+L+br*(0.8+2.2*rng()); sphere(S,cx+Math.cos(a+bend)*gd,cy+Math.sin(a+bend)*gd,br,0,Object.assign({mode:1,k:br,pf:LIQ,hs},base,ap(0.05))); } }
+  // satellites: droplets flung outward, smaller and more stretched the further they fly
+  const nd=Math.round(P.satellites*(10+26*rng()));
+  for(let k=0;k<nd;k++){ let a=rng()*6.283; if(bias>0){ let da=a-dir; while(da>Math.PI) da-=6.283; while(da<-Math.PI) da+=6.283; a=dir+da*(1-bias*0.85); }
+    const f=Math.pow(rng(),1.2), d=R*(1.2+3.6*f)*P.spread, rr=Math.max(0.6,R*(0.05+0.3*Math.pow(rng(),1.8))*(1.15-0.6*f));
+    teardrop(S,cx+Math.cos(a)*d,cy+Math.sin(a)*d,a,rr,rr*P.stretch*(0.3+2*f*rng()),hs*1.05,Object.assign({},base,ap(0.03+f*0.05))); }
+}
+defBrush({polish:0.9,id:'blood',name:'Blood',desc:'Glossy, viscous red that pools, drips downward and splatters; dry it from wet to crusted.',
+  defaults:{size:26,color:'#8a0b0b',gloss:0.9,dry:0.1,thick:0.6,drips:0.6,dripLen:1.2,rim:0.5,
+    splatter:0.4,splatSize:1,irregular:0.8,spikes:0.8,spikeLen:1,satellites:0.8,spread:1,stretch:1.2,mist:0.3,tapSplat:true,follow:0.5,
+    pool:0.7,thin:0.2,poolGap:0.9,wvar:0.25,wfreq:0.8,taperIn:0.15,taperOut:0.1,pressure:0.5},
+  scene:{bg:'#f2f0ec',bgType:0,az:135,el:42,shadowStr:0.3,shadowLen:16,shadowSoft:0.6,ao:0.5},
+  ui:[{k:'color',l:'Colour',t:'c',sw:['#8a0b0b','#5e0505','#a3120e','#3d0303','#6b1010','#2b0a0a']},{k:'gloss',l:'Wetness (gloss)',t:'r',min:0,max:1,st:.01},{k:'dry',l:'Dried (fresh ← → crusted)',t:'r',min:0,max:1,st:.01},{k:'thick',l:'Thickness',t:'r',min:0.1,max:1.5,st:.01},{k:'rim',l:'Dark rim',t:'r',min:0,max:1,st:.01},
+    {k:'drips',l:'Drips',t:'r',min:0,max:1.5,st:.01},{k:'dripLen',l:'Drip length',t:'r',min:0.2,max:3,st:.01},
+    {k:'splatter',l:'Splats along the stroke',t:'r',min:0,max:2,st:.01},{k:'tapSplat',l:'Tap makes a splat',t:'b'},{k:'splatSize',l:'Splat size',t:'r',min:0.2,max:3,st:.01},{k:'irregular',l:'Splat irregularity',t:'r',min:0,max:1.5,st:.01},{k:'spikes',l:'Spines',t:'r',min:0,max:2,st:.01},{k:'spikeLen',l:'Spine length',t:'r',min:0.2,max:3,st:.01},{k:'satellites',l:'Flung droplets',t:'r',min:0,max:2,st:.01},{k:'spread',l:'Droplet distance',t:'r',min:0.3,max:3,st:.01},{k:'stretch',l:'Droplet stretch',t:'r',min:0,max:4,st:.01},{k:'follow',l:'Fling with stroke direction',t:'r',min:0,max:1,st:.01},{k:'mist',l:'Fine spray',t:'r',min:0,max:1.5,st:.01}],
+  start(ctx,c){ c.d.next=ctx.P.size*(1+c.rng()*2); c.d.snext=ctx.P.size*(2+c.rng()*4); },
+  seg(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], col=cOf(P), hs=0.42*P.thick;
+    const base={mat:M.BLOOD,c:col,gloss:Math.round(P.gloss*255),grain:Math.round(P.dry*255),vr:Math.round(P.rim*255)};
+    const isTap=P.tapSplat&&c.total!=null&&c.total<=P.size*1.2; if(isTap) return; // a tap becomes a splat instead of a dot
+    ropeSeg(ctx,c,i,Object.assign({mode:1,k:P.size*0.45,pf:LIQ,hs,qf:(q,x,y)=>q+nz(x*0.8,y*0.8)*0.04},base),false);
+    if(P.drips>0) while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1));
+      const side=p.ny>=0?1:-1, sx=p.x+p.nx*side*p.r*0.55, sy=p.y+p.ny*side*p.r*0.55;
+      const L=P.dripLen*(18+p.r*3.5)*(0.35+1.1*c.rng()*c.rng()), r0=Math.max(1,p.r*(0.22+0.22*c.rng())), N=14, ap=AP(ctx,c,c.d.next,0.04,0,0.01);
+      let pr=null; const wob=(c.rng()-0.5)*0.12;
+      for(let k=0;k<=N;k++){ const tt=k/N; const q={x:sx+wob*L*tt*tt,y:sy+L*tt,u:0,r:r0*(1-0.45*tt)*(1+0.12*Math.sin(tt*9+c.rng())),base:0};
+        if(pr) rope(S,pr,q,Object.assign({mode:1,k:r0*1.2,pf:PF.round,hs:hs*0.9},base,ap,ap.birth!=null?{birth:ap.birth+tt*0.12}:NOANIM)); pr=q; }
+      sphere(S,pr.x,pr.y+r0*0.25,r0*1.25,0,Object.assign({mode:1,k:r0,pf:PF.round,hs:hs*1.1},base,ap,ap.birth!=null?{birth:ap.birth+0.13}:NOANIM));
+      c.d.next+=P.size*(1.2+2.8*c.rng())/Math.max(0.15,P.drips); }
+    // splats thrown off along the stroke — more and bigger when you draw fast
+    const fast=clamp(b.sp/0.8,0,1.5), dir=Math.atan2(-b.nx,b.ny);
+    if(P.splatter>0) while(c.d.snext<=b.u){ const side=c.rng()<0.5?1:-1, R=b.r*P.splatSize*(0.45+0.9*c.rng())*(0.7+0.5*fast), d=b.r*(1.6+3*c.rng())+R;
+      splat(ctx,c,b.x+b.nx*side*d,b.y+b.ny*side*d,R,dir,P.follow,base,hs,b.u);
+      c.d.snext+=P.size*(3+7*c.rng())/Math.max(0.1,P.splatter*(0.4+fast)); }
+    // fine spray: tiny droplets, mostly beside fast parts
+    const n=Math.floor(P.mist*(0.1+fast*1.4)*2+c.rng()*0.999);
+    for(let k=0;k<n;k++){ const side=c.rng()<0.5?1:-1, dd=b.r*(1.2+3.5*Math.pow(c.rng(),1.5)), along=(c.rng()-0.5)*b.r*2;
+      const x=b.x+b.nx*side*dd+b.ny*along, y=b.y+b.ny*side*dd-b.nx*along, rr=Math.max(0.6,b.r*(0.04+0.14*Math.pow(c.rng(),2.2)));
+      teardrop(S,x,y,dir+(c.rng()-0.5)*0.6*(1-P.follow)+side*0.25,rr,rr*P.stretch*(0.2+1.2*c.rng())*fast,hs*1.05,Object.assign({},base,AP(ctx,c,b.u,0.02+c.ra()*0.05,1,0.01))); }
+  },
+  end(ctx,c){ const P=ctx.P; if(!P.tapSplat||c.total==null||c.total>P.size*1.2||!c.pts.length) return; // a tap throws a full splat
+    const p=c.pts[0], base={mat:M.BLOOD,c:cOf(P),gloss:Math.round(P.gloss*255),grain:Math.round(P.dry*255),vr:Math.round(P.rim*255)};
+    splat(ctx,c,p.x,p.y,P.size*0.75*P.splatSize,0,0,base,0.42*P.thick,0); }});
+
+// 24 Trailing Flowers — fine stems that branch and hang under gravity, with clusters of tiny blossoms and small leaves
+const FLOWER_PAL={dusk:['#a99bc4','#8e84a8','#c9bfdc','#b8a2b8','#d8d0e4','#7f7a96','#c4b2c9','#e6e0ec','#9a8fb4'],lilac:['#b9a6d9','#9d8ac8','#cdb8e3','#8a78b8','#e2d6ee','#a898d0'],pink:['#e7b3cf','#d495bb','#f2d0e0','#c07aa6','#f6e4ee'],white:['#f4f1f5','#e6e1ea','#d8d2e2','#fbfafc'],blue:['#9fb2e0','#7f96d0','#c2cff0','#6a80bf'],mixed:['#b9a6d9','#e7b3cf','#f4f1f5','#9d8ac8','#d8b4d8','#c2cff0','#e2d6ee']};
+function blossom(S,x,y,r,np,rot,col,o,lean){ // a small flower: rounded petals around a light centre
+  for(let k=0;k<np;k++){ const a=rot+k*6.283/np, cx=x+Math.cos(a)*r*0.55, cy=y+Math.sin(a)*r*0.55+lean*r*0.15;
+    sphere(S,cx,cy,r*0.5,r*0.1,Object.assign({mode:0,pf:q=>Math.pow(1-q*q,0.9),hs:0.28,c:col.map(v=>clamp(v*(0.92+0.16*((k*37)%10)/10),0,255)),vr:90+((k*53)%140)},o)); }
+  sphere(S,x,y,r*0.2,r*0.22,Object.assign({mode:0,pf:PF.round,hs:0.5,c:[238,228,214],vr:200},o));
+}
+function flowersSculpted(ctx,c,i){ const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], sc=hex2rgb(P.stem), lc=hex2rgb(P.leaf), pal=(FLOWER_PAL[P.palette]||FLOWER_PAL.lilac).map(hex2rgb);
+    const so={mode:0,pf:PF.round,hs:0.8,mat:M.PETAL,c:sc,vr:60,gloss:20};
+    ropeSeg(ctx,c,i,Object.assign({},so),false);
+    const fl=(x,y,s,u,dl)=>{ const r=Math.max(1.6,(3+P.size*0.9)*P.flowerSize*s); blossom(S,x,y,r,P.petals|0,c.rng()*6.283,pal[Math.floor(c.rng()*pal.length)],Object.assign({mat:M.PETAL,gloss:40},AP(ctx,c,u,dl,1,0.01)),0); };
+    const cl=(x,y,s,u,dl)=>{ const n=1+Math.round(P.cluster*(3+9*c.rng())), spread=(7+P.size*2.5)*P.flowerSize*(0.6+P.cluster);
+      for(let k=0;k<n;k++){ const an=c.rng()*6.283, d=Math.sqrt(c.rng())*spread; fl(x+Math.cos(an)*d,y+Math.sin(an)*d*0.8,s*(0.6+0.6*c.rng()),u,dl+0.02+k*0.006); } };
+    const lf=(x,y,ang,L,u,dl)=>leaf(S,x,y,ang,L,L*0.28,0.5,Object.assign({mode:0,mat:M.PETAL,c:lc.map(v=>v*(0.85+0.3*c.rng())),gloss:30,vr:80,thick:0.35,rib:0.3,curl:(c.rng()-0.5)*0.4},AP(ctx,c,u,dl,1,0.01),{bs:0.05}));
+    // a branch that bends toward the ground as it grows; it can fork, and ends in a flower cluster
+    const branch=(x,y,ang,len,r0,depth,u,dl)=>{ const N=Math.max(8,Math.round(len/4)); let pr={x,y,u:0,r:r0,base:0}, an=ang;
+      const ap=AP(ctx,c,u,dl,0,0.01);
+      for(let k=1;k<=N;k++){ const t=k/N; let da=Math.PI/2-an; while(da>Math.PI) da-=6.283; while(da<-Math.PI) da+=6.283;
+        an+=da*P.droop*0.13*(0.4+t)+(c.rng()-0.5)*0.28; const x2=pr.x+Math.cos(an)*len/N, y2=pr.y+Math.sin(an)*len/N;
+        const q={x:x2,y:y2,u:0,r:Math.max(0.35,r0*(1-0.75*t)),base:0};
+        rope(S,pr,q,Object.assign({},so,ap,ap.birth!=null?{birth:ap.birth+t*0.06}:NOANIM)); pr=q;
+        if(c.rng()<P.leaves*0.14) lf(q.x,q.y,an+(c.rng()<0.5?1:-1)*(0.6+0.5*c.rng()),(5+P.size*2.5)*(0.6+0.6*c.rng()),u,dl+t*0.06+0.02);
+        if(t>0.35&&c.rng()<P.density*0.05) cl(q.x,q.y,0.6,u,dl+t*0.06+0.02);
+        if(c.rng()<P.sprigs*0.12){ let sx=q.x, sy=q.y, sa=an+(c.rng()<0.5?1:-1)*(0.5+0.7*c.rng()), spr={x:sx,y:sy,u:0,r:Math.max(0.3,q.r*0.6),base:0}; const sl=6+P.size*4*(0.5+c.rng());
+          for(let m=1;m<=4;m++){ sa+=(c.rng()-0.5)*0.5; const sq={x:spr.x+Math.cos(sa)*sl/4,y:spr.y+Math.sin(sa)*sl/4,u:0,r:Math.max(0.25,spr.r*0.8),base:0}; rope(S,spr,sq,Object.assign({},so,ap,ap.birth!=null?{birth:ap.birth+t*0.06+0.02}:NOANIM)); spr=sq; } }
+        if(depth>1&&t>0.15&&c.rng()<P.branches*0.16) branch(q.x,q.y,an+(c.rng()<0.5?1:-1)*(0.4+0.6*c.rng()),len*(0.4+0.45*c.rng()),q.r,depth-1,u,dl+t*0.06); }
+      if(P.density>0) cl(pr.x,pr.y,1,u,dl+0.07); };
+    while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1)); const side=c.d.side; c.d.side*=-1; const tang=Math.atan2(-p.nx,p.ny);
+      const len=P.branchLen*(70+P.size*22)*(0.45+0.9*c.rng());
+      branch(p.x,p.y,tang+side*(0.6+0.7*c.rng()),len,Math.max(0.45,p.r*0.7),P.depth|0,c.d.next,0.02);
+      if(c.rng()<P.tendrils*0.7) branch(p.x,p.y,Math.PI/2+(c.rng()-0.5)*0.6,len*(1.2+1.6*c.rng())*P.tendrils,Math.max(0.35,p.r*0.45),2,c.d.next,0.03); // long hanging tendril
+      c.d.next+=(16+P.size*7)*(0.6+0.8*c.rng())/Math.max(0.08,P.branches); }
+    while(c.d.fnext<=b.u){ const t=b.u>a.u?(c.d.fnext-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1));
+      if(c.rng()<P.density*0.18) cl(p.x+p.nx*(c.rng()-0.5)*8,p.y+p.ny*(c.rng()-0.5)*8,0.75,c.d.fnext,0.04);
+      if(c.rng()<P.leaves*0.5) lf(p.x,p.y,Math.atan2(-p.nx,p.ny)+(c.rng()<0.5?1:-1)*(0.7+0.4*c.rng()),(6+P.size*3)*(0.6+0.6*c.rng()),c.d.fnext,0.03);
+      c.d.fnext+=(14+P.size*4)*(0.6+0.8*c.rng()); }
+}
+// Print style: flat, grainy ink silhouettes — curtains of hanging strands, pinnate leaves, wisteria-like racemes
+let INKID=1;
+const FPRINT={periwinkle:{stem:['#a5a2d6','#9592cc','#b6b3e0','#8986c4','#c3c0e6'],leaf:['#9d9ad2','#aeabdb','#8b88c6','#bcb9e3','#7f7cbd'],flower:['#7471b6','#6965aa','#857ec0','#8f76ad','#a283ad','#5f5ba0','#9a97d0'],green:['#97ab9f','#8ea496','#a8b9ae']},
+  violet:{stem:['#7a6fb3','#6c62a6','#8c82c0'],leaf:['#8579bd','#9c92cc','#6d63a8'],flower:['#4e3f86','#634f96','#7e5c9c','#9a6fa0'],green:['#7f9a8a']},
+  mauve:{stem:['#9b88b4','#8a789f','#ad9cc2'],leaf:['#a796be','#bcaed0','#8d7aa6'],flower:['#7d5a8c','#94688f','#b07fa0','#6a4f80'],green:['#8fa596']},
+  ink:{stem:['#3d3b5a','#4a4868'],leaf:['#45436a','#5a5880'],flower:['#2a2840','#3b3858'],green:['#4a5650']}};
+function flowersPrint(ctx,c,i){
+  const P=ctx.P, S=ctx.S, a=c.pts[i-1], b=c.pts[i], rng=c.rng, pal=FPRINT[P.palette]||FPRINT.periwinkle;
+  const pick=arr=>hex2rgb(arr[Math.floor(rng()*arr.length)]), gr=P.grainAmt, rough=P.rough, sd=(ctx.st.seed%89)*2.3;
+  const ink=(col,dl,u,extra,gs,rs,ef)=>{ const tone=0.9+0.2*rng(), g2=gr*(gs==null?1:gs), r2=rough*(rs==null?1:rs), fq=ef||0.7, soft=ef?0.93:0.72;
+    return Object.assign({mode:3,mat:M.INK,mult:P.overlap,iid:++INKID,c:col,
+      cf:(x,y)=>{ const m=tone*(0.88+0.24*nz(x*0.09+sd,y*0.09))*(0.94+0.12*nz(x*0.6,y*0.6+sd)); const lw=P.wash*clamp(nz(x*0.13+sd*1.7,y*0.13)*1.6-0.15,0,1)*0.55;
+        return [0,1,2].map(k=>{ const v=col[k]*m; return clamp(v+(250-v)*lw,0,255); }); },
+      covf:(q,x,y)=>{ const e=q+r2*0.22*(nz(x*fq+sd,y*fq)*0.7+nz(x*fq*3.1,y*fq*3.1+sd)*0.3); let cv=sstep(1,soft,e); if(g2>0){ const h=hash2(Math.floor(x*1.6),Math.floor(y*1.6)); cv*=1-g2*0.7*(h>0.7?1:0)-g2*0.2*h; } return cv; }},
+      AP(ctx,c,u,dl,3,0.005),extra||{}); };
+  const line=(p,q,r0,r1,o)=>rope(S,{x:p.x,y:p.y,r:r0,u:0,base:0},{x:q.x,y:q.y,r:r1,u:0,base:0},o);
+  // a small pointed leaflet (flat silhouette)
+  const leaflet=(x,y,ang,L,col,u,dl)=>leaf(S,x,y,ang,L,L*P.leafW*(0.42+0.22*rng()),0,Object.assign(ink(col,dl,u),{shape:0,thick:0.4,curl:(rng()-0.5)*0.6}));
+  // pinnate compound leaf: a short rachis with pairs of leaflets, drooping
+  const compound=(x,y,ang,u,dl)=>{ const n=Math.floor(rng()*3), L=P.leafSize*(9+8*rng()), col=rng()<P.green*0.6?pick(pal.green):pick(pal.leaf); let px=x,py=y, an=ang; const sp=L*0.62;
+    const o=ink(col,dl,u,null,0.3,0.5); for(let k=0;k<=n;k++){ const nx=px+Math.cos(an)*sp, ny=py+Math.sin(an)*sp; line({x:px,y:py},{x:nx,y:ny},0.55,0.5,o);
+      const s=L*(1-0.25*k/Math.max(1,n))*(0.8+0.4*rng()); if(rng()<0.85) leaflet(nx,ny,an-0.6-0.7*rng(),s,col,u,dl+0.01*k); if(rng()<0.85) leaflet(nx,ny,an+0.6+0.7*rng(),s,col,u,dl+0.01*k); px=nx; py=ny; an+=(Math.PI/2-an)*0.3+(rng()-0.5)*0.4; }
+    leaflet(px,py,an,L*0.9,col,u,dl+0.06); };
+  const sprig=(x,y,ang,len,u,dl,lev)=>{ const col=hex2rgb(pal.stem[pal.stem.length-1]).map((v,k)=>v*(0.92+0.12*rng())), o=ink(col,dl,u,null,0.15,0.4), N=3+Math.floor(rng()*3); let px=x,py=y,an=ang;
+    for(let k=1;k<=N;k++){ an+=(rng()-0.5)*0.7+(Math.PI/2-an)*0.08; const nx=px+Math.cos(an)*len/N, ny=py+Math.sin(an)*len/N; line({x:px,y:py},{x:nx,y:ny},0.5,0.45,o); px=nx; py=ny;
+      if(rng()<0.5) leaflet(px,py,an+(rng()<0.5?1:-1)*(0.5+0.6*rng()),P.leafSize*(3+3*rng()),col,u,dl+0.01*k);
+      if(lev<1&&rng()<0.3) sprig(px,py,an+(rng()<0.5?1:-1)*(0.6+0.5*rng()),len*0.55,u,dl+0.01*k,lev+1); }
+    if(rng()<0.6) leaflet(px,py,an,P.leafSize*(3.5+3*rng()),col,u,dl+0.05); };
+  // raceme: an elongated hanging cluster of small jagged petals, widest at the top
+  const raceme=(x,y,u,dl)=>{ const L=P.clusterSize*(20+32*rng()), W=L*(0.32+0.2*rng()), n=Math.round(L*1.1*P.clusterFill), tilt=(rng()-0.5)*0.6;
+    line({x,y},{x:x+Math.sin(tilt)*L,y:y+Math.cos(tilt)*L},0.9,0.4,ink(pick(pal.stem),dl,u,null,0.4));
+    const bo=ink(pick(pal.flower),dl+0.02,u,null,0.6,2.6,1.8), nb=5; let pb=null;
+    for(let k=0;k<=nb;k++){ const t=k/nb, q={x:x+Math.sin(tilt)*L*t*0.9+(rng()-0.5)*W*0.3,y:y+Math.cos(tilt)*L*t*0.9,r:W*0.48*(1-0.6*t)*(0.75+0.45*rng()),u:0,base:0};
+      if(pb) rope(S,pb,q,bo.birth!=null?Object.assign({},bo,{birth:bo.birth+t*0.06}):bo); pb=q; }
+    for(let k=0;k<n;k++){ const t=Math.pow(rng(),0.8), w=W*0.85*(1-0.7*t)*(rng()*2-1), cx=x+Math.sin(tilt)*L*t+w, cy=y+Math.cos(tilt)*L*t+(rng()-0.5)*3;
+      const col=rng()<P.green*0.15?pick(pal.green):pick(pal.flower), s=P.clusterSize*(3+5*rng())*(1-0.35*t);
+      leaf(S,cx,cy,rng()*6.283,s,s*(0.38+0.25*rng()),0,Object.assign(ink(col,dl+0.02+t*0.08,u),{shape:rng()<0.5?1:0,thick:0.4})); } };
+  // a hanging strand: falls under gravity with a slow sway, sprouting leaves, side twigs and racemes
+  const strand=(x,y,ang,len,w0,depth,u,dl)=>{ const step=3.5, N=Math.max(4,Math.round(len/step)), col=depth<(P.depth|0)?hex2rgb(pal.stem[Math.min(pal.stem.length-1,2+Math.floor(rng()*3))]):pick(pal.stem), o=ink(col,dl,u,null,0.25,0.5), ph=rng()*6.28, sw=P.sway*(0.6+0.8*rng());
+    let px=x,py=y,an=ang, nextLeaf=8+rng()*10*P.spacing;
+    for(let k=1;k<=N;k++){ const t=k/N; let da=Math.PI/2-an; while(da>Math.PI) da-=6.283; while(da<-Math.PI) da+=6.283;
+      an+=da*P.gravity*0.16+Math.sin(ph+t*len*0.025)*sw*0.09+(rng()-0.5)*0.16*rough+(rng()<0.03?(rng()-0.5)*0.9*rough:0);
+      const nx=px+Math.cos(an)*step, ny=py+Math.sin(an)*step, r=Math.max(0.45,w0*(1-0.65*t));
+      const oo=o.birth!=null?Object.assign({},o,{birth:o.birth+t*0.12}):o; line({x:px,y:py},{x:nx,y:ny},r,r,oo); px=nx; py=ny;
+      if(k*step>=nextLeaf){ nextLeaf+=P.spacing*(8+12*rng()); const side=rng()<0.5?1:-1, d2=dl+t*0.12+0.02, rr=rng();
+        if(rr<P.leaves*0.55) compound(px,py,an+side*(0.6+0.5*rng()),u,d2);
+        else if(rr<P.leaves*0.55+P.leaves*0.3) leaflet(px,py,an+side*(0.7+0.5*rng()),P.leafSize*(7+6*rng()),rng()<P.green*0.5?pick(pal.green):pick(pal.leaf),u,d2);
+        if(rng()<P.flowers*(depth===(P.depth|0)?0.12:0.04)) raceme(px+Math.cos(an+side*1.4)*3,py,u,d2+0.02);
+        if(rng()<P.lace*0.28) sprig(px,py,an+side*(0.5+0.8*rng()),(8+16*rng())*P.leafSize,u,d2,0);
+        if(depth>1&&rng()<P.branching*0.22) strand(px,py,an+side*(0.5+0.5*rng()),len*(1-t)*(0.4+0.5*rng()),r*0.85,depth-1,u,d2); } }
+    if(rng()<P.flowers*(depth===(P.depth|0)?0.7:0.25)) raceme(px,py,u,dl+0.14); else if(rng()<P.leaves) leaflet(px,py,an,P.leafSize*8,pick(pal.leaf),u,dl+0.14); };
+  // the drawn line itself is a vine
+  const so=c.d.vine||(c.d.vine=ink(pick(pal.stem),0,0,{bf:c.B,bq:0},0.25,0.5));
+  const vr=P.vineW;
+  if(c.d.vine.bf===undefined) delete c.d.vine.bf;
+  if(vr>0) ropeSeg(ctx,c,i,Object.assign({},so,{mode:3,iid:so.iid}),false,vr);
+  while(c.d.next<=b.u){ const t=b.u>a.u?(c.d.next-a.u)/(b.u-a.u):0, p=lerpPt(a,b,clamp(t,0,1)); const tang=Math.atan2(-p.nx,p.ny), side=rng()<0.5?1:-1;
+    const len=P.hangLen*(60+340*Math.pow(rng(),1.4));
+    strand(p.x,p.y,tang+side*(0.3+0.9*rng()),len,Math.max(0.55,P.size*0.3*(0.5+0.9*rng())*(rng()<0.18?2.2:1)),P.depth|0,c.d.next,0.02);
+    if(rng()<P.leaves*0.4) compound(p.x,p.y,tang+side*(1+0.4*rng()),c.d.next,0.03);
+    c.d.next+=(9+P.size*2)*(0.5+1.0*rng())/Math.max(0.05,P.hang); }
+}
+defBrush({polish:0,id:'flowers',name:'Trailing Flowers',desc:'Curtains of hanging strands with pinnate leaves and wisteria-like clusters, in a grainy printed look.',
+  defaults:{style:'print',size:4,vineW:0.5,palette:'periwinkle',hang:0.75,hangLen:1,gravity:0.75,sway:0.8,branching:0.7,depth:2,lace:0.8,leaves:0.8,leafSize:1,leafW:0.5,spacing:1.2,flowers:0.5,clusterSize:1,clusterFill:1,green:0.2,grainAmt:0.5,rough:0.8,overlap:0.35,wash:0.6,
+    stem:'#8f86a3',leaf:'#9aa596',branches:0.8,branchLen:1,droop:0.75,density:0.7,flowerSize:1,cluster:0.7,petals:5,sprigs:0.6,tendrils:0.6,pressure:0.2,taperIn:0.05,taperOut:0.3,smooth:0.4},
+  scene:{bg:'#fbfbfc',bgType:0,az:120,el:50,shadowStr:0,ao:0,micro:0,grain:0.09},
+  ui:[{k:'style',l:'Style',t:'s',o:[['print','Printed (reference)'],['sculpted','Sculpted blossoms']]},
+    {k:'palette',l:'Ink colours (printed)',t:'s',o:[['periwinkle','Periwinkle'],['violet','Violet'],['mauve','Mauve'],['ink','Dark ink']]},
+    {k:'vineW',l:'Main vine width',t:'r',min:0,max:2,st:.01},{k:'hang',l:'Hanging strands',t:'r',min:0.05,max:2.5,st:.01},{k:'hangLen',l:'Strand length',t:'r',min:0.2,max:3,st:.01},{k:'gravity',l:'Gravity',t:'r',min:0,max:1.5,st:.01},{k:'sway',l:'Sway',t:'r',min:0,max:2,st:.01},
+    {k:'branching',l:'Side twigs',t:'r',min:0,max:2,st:.01},{k:'lace',l:'Fine lace sprigs',t:'r',min:0,max:2,st:.01},{k:'depth',l:'Twig depth',t:'s',o:[[1,'1'],[2,'2'],[3,'3']]},
+    {k:'leaves',l:'Leaves',t:'r',min:0,max:1.5,st:.01},{k:'leafSize',l:'Leaf size',t:'r',min:0.3,max:3,st:.01},{k:'leafW',l:'Leaf width',t:'r',min:0.15,max:0.9,st:.01},{k:'spacing',l:'Leaf spacing',t:'r',min:0.4,max:3,st:.01},
+    {k:'flowers',l:'Flower clusters',t:'r',min:0,max:2,st:.01},{k:'clusterSize',l:'Cluster size',t:'r',min:0.3,max:3,st:.01},{k:'clusterFill',l:'Cluster fullness',t:'r',min:0.2,max:2.5,st:.01},
+    {k:'green',l:'Green leaves',t:'r',min:0,max:1,st:.01},{k:'grainAmt',l:'Print grain',t:'r',min:0,max:1,st:.01},{k:'rough',l:'Ragged edges',t:'r',min:0,max:1.5,st:.01},{k:'overlap',l:'Overlap darkening',t:'r',min:0,max:1,st:.01},{k:'wash',l:'Light wash patches',t:'r',min:0,max:1.5,st:.01},
+    {k:'stem',l:'Stem colour (sculpted)',t:'c',sw:['#8f86a3','#6e6680','#8a8f76','#5a4e44','#b0a8bf']},{k:'leaf',l:'Leaf colour (sculpted)',t:'c',sw:['#9aa596','#8c9a86','#6d8a64','#a3b39b','#9a8fb0']}],
+  start(ctx,c){ c.d.next=ctx.P.size*2+c.rng()*10; c.d.side=1; c.d.fnext=8+c.rng()*20; c.d.vine=null; },
+  seg(ctx,c,i){ if(ctx.P.style==='sculpted') return flowersSculpted(ctx,c,i); return flowersPrint(ctx,c,i); }});
+
 // Eraser (hidden)
 defBrush({id:'eraser',name:'Eraser',hidden:true,desc:'Removes relief and material.',defaults:{size:30,hard:0.6,pressure:0.4,taperIn:0,taperOut:0,clean:0.3},
   ui:[{k:'hard',l:'Hardness',t:'r',min:0,max:0.95,st:.01}],
@@ -1119,6 +1330,23 @@ void main(){
     } else if(m==16){ vec3 c=alb*(0.82+0.3*vr); float w=max((dot(N,L)+0.2)/1.2,0.)*sh; col=c*(amb+w*lc)+pow(ndh,mix(10.,60.,gls))*0.5*gls*sh*lc+alb*0.12*(1.-ndl);
     } else if(m==17){ col=alb*(amb*0.95+max((dot(N,L)+0.2)/1.2,0.)*mix(1.,sh,0.8)*lc*0.95)*(0.75+0.25*ao)+pow(ndh,22.)*0.14*sh;
       if(grn>0.){ float sp=hash(floor(fp*1.8)); float flat_=smoothstep(0.12,0.0,1.-N.z); float dens=grn*(0.25+0.75*flat_)*(0.5+0.8*vnoise(fp*0.25)); col=mix(col,col*0.25,step(1.-dens*0.45,sp)); col+=step(1.-dens*0.06,hash(floor(fp*1.8)+5.))*0.35*sh; }
+    } else if(m==23){ // petals / fine stems: soft, slightly translucent, light edges, gentle colour variation
+      vec3 c=alb*(0.86+0.28*vr)*(0.94+0.12*vnoise(fp*0.6));
+      float w=max((dot(N,L)+0.45)/1.45,0.)*mix(1.,sh,0.6);
+      col=c*(amb*1.0+w*lc*0.62)*(0.75+0.25*ao)+alb*0.1+pow(ndh,30.)*0.06*sh;
+    } else if(m==22){ // blood: thin film reads bright red, thick pools near-black; wet = mirror highlights, dried = matte brown with a dark rim
+      float thick=clamp(h*0.11,0.,1.), dry=grn, wet=gls*(1.-dry*0.85);
+      vec3 thinC=alb*vec3(2.1,1.3,1.3)+vec3(0.08,0.,0.), deepC=alb*vec3(0.62,0.4,0.4);
+      vec3 c=mix(thinC,deepC,sqrt(thick));
+      c=mix(c,mix(vec3(0.28,0.07,0.05),vec3(0.17,0.04,0.03),thick)*(0.85+0.3*vnoise(fp*0.4)),dry*0.85);
+      float edge=smoothstep(0.03,0.4,1.-N.z)*(1.-smoothstep(0.5,1.,thick)); c*=1.-vr*(0.3+0.4*dry)*edge;      // darker meniscus rim
+      if(dry>0.3){ float ck=smoothstep(0.08,0.0,abs(vnoise(fp*0.35)-0.5))*smoothstep(0.3,0.8,dry); c*=1.-0.45*ck; } // crazing as it crusts
+      float w=max((dot(N,L)+0.3)/1.3,0.)*mix(1.,sh,0.7);
+      vec3 Nw=normalWide(p,max(2,int(uQ*2.))); vec3 Nr=normalize(vec3(Nw.xy*3.5,Nw.z)); vec3 Rr=reflect(vec3(0,0,-1),Nr); float ndr=max(dot(Nr,Hh),0.);
+      float env=envL(Rr), sl=smoothstep(0.02,0.5,1.-Nr.z);
+      col=c*(amb*0.8+w*lc*0.6)*(0.8+0.2*ao)+alb*vec3(0.3,0.05,0.04)*(1.-thick)*(1.-dry);                                  // a little light through thin film
+      col*=mix(1.,mix(0.55,1.15,smoothstep(0.3,0.7,env)),wet*sl);
+      col+=(pow(ndr,mix(40.,320.,wet))*mix(0.,2.4,wet*wet)+pow(ndh,20.)*0.08*wet)*sh*lc+vec3(smoothstep(0.72,0.86,env))*sl*0.45*wet*wet;
     } else if(m==21){ // salt-and-pepper sand ridge: the light picks out bright grains on the facing slope, the far slope goes dark
       float gsz=mix(0.3,3.,gls); vec2 gc=floor(fp/gsz); float hgr=hash(gc), hg2=hash(gc+31.);
       float lam=clamp(dot(N,L),0.,1.)*sh, lamF=clamp(L.z,0.05,1.);
@@ -1635,7 +1863,7 @@ const SCENE_RESET=['bg','bgType','shadowStr','shadowLen','shadowSoft','refl','sh
 const GLOBAL0={size:1,pool:0,thin:0,wvar:0,taper:0,pressure:1,wobble:0,bubbles:0,sink:0};
 let doc={global:Object.assign({},GLOBAL0),aspect:'4:3',strokes:[],scene:Object.assign({},SCENE0),nextId:1,anim:Object.assign({},ANIM0)};
 let ui={brush:'kinetic',eraser:false,params:{},sym:{mode:'none',n:6,cx:.5,cy:.5,guides:true},tool:'draw',tab:'brush',sel:null,quality:1.5,penOnly:false,applyAll:true};
-const BRUSH_VER=7; // bump when brush defaults change so saved brush settings don't hide the new look
+const BRUSH_VER=10; // bump when brush defaults change so saved brush settings don't hide the new look
 let S, R, bgImg=null, undoS=[], redoS=[];
 const sc=()=>doc.scene;
 function Lvec(s){ const a=s.az*Math.PI/180, e=s.el*Math.PI/180; return [Math.cos(a)*Math.cos(e),-Math.sin(a)*Math.cos(e),Math.sin(e)]; }
