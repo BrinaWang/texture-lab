@@ -488,13 +488,28 @@ function polishStroke(S,pts,rpx){
   S.mark(x0,y0,x1,y1);
 }
 
+// ---- bubbles (raised blisters) and sinks (dents) scattered over a finished stroke's own surface ----
+function surfaceFx(S,pts,P,seed){
+  if(pts.length<2) return; const rng=mulberry(seed*97+5), tot=pts[pts.length-1].u, R=Math.max(1,P.size*0.5), q=S.q, W=S.w, H=S.H, H0=S.H0;
+  const at=u=>{ let lo=0,hi=pts.length-1; while(hi-lo>1){ const m=(lo+hi)>>1; if(pts[m].u<u) lo=m; else hi=m; } const a=pts[lo],b=pts[hi],t=clamp((u-a.u)/Math.max(1e-6,b.u-a.u),0,1); return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t,r:a.r+(b.r-a.r)*t,nx:a.nx,ny:a.ny}; };
+  const blob=(cx,cy,rad,amt)=>{ const X=cx*q,Y=cy*q,Rp=rad*q, x0=Math.max(0,Math.floor(X-Rp)),x1=Math.min(W-1,Math.ceil(X+Rp)),y0=Math.max(0,Math.floor(Y-Rp)),y1=Math.min(S.h-1,Math.ceil(Y+Rp));
+    for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){ const dx=(x+.5-X)/Rp, dy=(y+.5-Y)/Rp, d2=dx*dx+dy*dy; if(d2>=1) continue; const i=y*W+x, own=H[i]-H0[i]; if(own<=0.02) continue;
+      const m=clamp(own/(R*0.25),0,1); // fades out toward the stroke's edge so nothing pokes past it
+      if(amt>0) H[i]+=amt*rad*Math.sqrt(1-d2)*m; else H[i]=Math.max(H0[i],H[i]+amt*rad*Math.pow(Math.cos(Math.sqrt(d2)*Math.PI/2),2)*m); }
+    if(x0<=x1&&y0<=y1) S.mark(x0,y0,x1,y1); };
+  const place=(amt,size,sign)=>{ if(!(amt>0)) return; const n=Math.round(tot/(R*1.6)*amt*1.2+rng()*0.99);
+    for(let k=0;k<n;k++){ const p=at(rng()*tot), off=(rng()*2-1)*p.r*0.55, rad=Math.max(1,p.r*size*(0.35+0.75*rng()));
+      blob(p.x+p.nx*off,p.y+p.ny*off,rad,sign*(sign>0?0.55:0.75)*(0.6+0.6*rng())); } };
+  place(P.bubbles,P.bubbleSize||0.5,1); place(P.sink,P.sinkSize||0.5,-1);
+}
+
 // ---- stroke runner: renders one stroke (all symmetry copies), live or full ----
 let GADJ=null; // global adjustments applied to every stroke (All strokes panel)
 function strokeParams(st){
   const br=BRUSH[st.brush]; const P=Object.assign({},br.defaults,st.P);
   const s=st.tf?st.tf.s:1; if(s!==1) P.size*=s;
   const g=GADJ; if(g){ P.size*=g.size; P.pool=Math.max(0,(P.pool||0)+g.pool); P.thin=clamp((P.thin||0)+g.thin,0,1); P.wvar=clamp((P.wvar||0)+g.wvar,0,1.5);
-    P.taperIn=clamp((P.taperIn||0)+g.taper,0,1); P.taperOut=clamp((P.taperOut||0)+g.taper,0,1); P.pressure=clamp((P.pressure||0)*g.pressure,0,1); P.scatter=Math.max(0,(P.scatter||0)+g.wobble); }
+    P.taperIn=clamp((P.taperIn||0)+g.taper,0,1); P.taperOut=clamp((P.taperOut||0)+g.taper,0,1); P.pressure=clamp((P.pressure||0)*g.pressure,0,1); P.scatter=Math.max(0,(P.scatter||0)+g.wobble); P.bubbles=Math.max(0,(P.bubbles||0)+(g.bubbles||0)); P.sink=Math.max(0,(P.sink||0)+(g.sink||0)); }
   return P;
 }
 function tfRaw(st){
@@ -553,7 +568,9 @@ class StrokeRun{
       for(let i=1;i<c.pts.length;i++) br.seg(ctx,c,i);
       br.flush&&br.flush(ctx,c);
       br.end&&br.end(ctx,c);
-      if(br.polish){ const rpx=Math.max(1,Math.round(this.P.size*0.5*S.q*0.11*br.polish)); polishStroke(S,c.pts,rpx); }
+      const pol=typeof br.polish==='function'?br.polish(this.P):br.polish;
+      if(pol>0){ const rpx=Math.max(1,Math.round(this.P.size*0.5*S.q*0.11*pol)); polishStroke(S,c.pts,rpx); }
+      if(this.P.bubbles>0||this.P.sink>0) surfaceFx(S,c.pts,this.P,this.st.seed*31+c.k);
     }
   }
 }
@@ -566,7 +583,7 @@ function AT(ctx,t,beh,bq){ if(!ctx.S.anim) return NOANIM; return {eid:++ctx.S.ei
 
 // ================= BRUSHES =================
 const BRUSH={}; const BLIST=[];
-const COMMON={size:24,pressure:0.6,speedInf:0,wvar:0,wfreq:1,scatter:0,sfreq:1,smooth:0.35,clean:0.6,taperIn:0.2,taperOut:0.2,pool:0,thin:0,poolGap:1};
+const COMMON={size:24,pressure:0.6,speedInf:0,wvar:0,wfreq:1,scatter:0,sfreq:1,smooth:0.35,clean:0.6,taperIn:0.2,taperOut:0.2,pool:0,thin:0,poolGap:1,bubbles:0,bubbleSize:0.5,sink:0,sinkSize:0.5};
 function defBrush(b){ b.defaults=Object.assign({},COMMON,b.defaults); BRUSH[b.id]=b; if(!b.hidden){ BLIST.push(b); b.num=BLIST.length; } }
 const ENDS={k:'ends',l:'End shape',t:'s',o:[['round','Round'],['drop','Drop'],['wedge','Wedge']]};
 const LAYER={k:'mode',l:'Ropes',t:'s',o:[['layer','Layer'],['merge','Merge']]};
@@ -586,14 +603,14 @@ function ropeSeg(ctx,c,i,o,layer,rmul){ if(ctx.S.anim&&o.eid==null&&o.mode!==4) 
     rope(ctx.S,prev,q,o); prev=q; } }
 
 // 01 Glazed Ceramic — soft porcelain: broad flattened top, satin glaze, gentle ripples along the rope
-defBrush({polish:1,id:'ceramic',name:'Glazed Ceramic',desc:'Porcelain ropes with a lacquer highlight. Stroke ends are a drop or a wedge.',
-  defaults:{pool:0.4,thin:0.15,size:60,color:'#dcd8d0',ends:'round',mode:'merge',gloss:0.55,glaze:0.35,ripple:0.5,wvar:0.18,wfreq:0.7,taperIn:0.1,taperOut:0.1},
+defBrush({polish:P=>1-0.65*(P.ripple||0),id:'ceramic',name:'Glazed Ceramic',desc:'Porcelain ropes with a lacquer highlight. Stroke ends are a drop or a wedge.',
+  defaults:{pool:0.4,thin:0.15,size:60,color:'#dcd8d0',ends:'round',mode:'merge',gloss:0.7,glaze:0.5,ripple:0.4,wvar:0.18,wfreq:0.7,taperIn:0.1,taperOut:0.1},
   scene:{bg:'#151517',bgType:0,shadowStr:0.45,ao:0.7},
-  ui:[ENDS,LAYER,{k:'color',l:'Glaze colour',t:'c',sw:['#dcd8d0','#f2efe9','#1d2f5e','#2f6f73','#b8463a','#e8c45a','#141414','#9cb7a3']},{k:'gloss',l:'Lacquer',t:'r',min:0,max:1,st:.01},{k:'ripple',l:'Ripples',t:'r',min:0,max:1,st:.01},{k:'glaze',l:'Glaze pooling',t:'r',min:0,max:1,st:.01}],
+  ui:[ENDS,LAYER,{k:'color',l:'Glaze colour',t:'c',sw:['#dcd8d0','#f2efe9','#1d2f5e','#2f6f73','#b8463a','#e8c45a','#141414','#9cb7a3']},{k:'gloss',l:'Lacquer (matte bisque ← → wet lacquer)',t:'r',min:0,max:1,st:.01},{k:'ripple',l:'Ripples',t:'r',min:0,max:1,st:.01},{k:'glaze',l:'Glaze pooling',t:'r',min:0,max:1,st:.01}],
   layer:P=>P.mode==='layer',
   seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', rp_=P.ripple, sd=ctx.st.seed%97;
     ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.3,pf:q=>Math.sqrt(Math.max(0,1-q*q*q)),hs:0.55,mat:M.CERAMIC,qf:(q,x,y)=>q+nz(x*0.7,y*0.7)*0.05,c:cOf(P),gloss:P.gloss*255,grain:P.glaze*255,vr:128,
-      tex:(u,v,x,y,r)=>rp_*r*(0.06*nz(u*0.03+sd,v*1.2)+0.025*nz(u*0.09,v*2.5+sd))},L); }});
+      tex:(u,v,x,y,r)=>rp_*r*(0.16*Math.sin(u/Math.max(2,r*0.85)*Math.PI+2.5*nz(u*0.012+sd,v*0.8))*(0.65+0.35*nz(u*0.02,sd))*Math.sqrt(Math.max(0,1-v*v))+0.05*nz(u*0.09,v*2.5+sd))},L); }});
 // 02 Stone — a flat slab: smooth top, a narrow bevelled rim, grain on the lit slope, eroded outline
 defBrush({id:'stone',name:'Stone Brush',desc:'Lines fuse into a single rock, and the lit slope is covered in grain.',
   defaults:{pool:0.3,thin:0.2,size:72,color:'#5d5d5c',rim:0.6,wander:0.8,blend:0.5,height:0.5,rough:0.08,grain:0.9,surface:0.2,taperIn:0.1,taperOut:0.1},
@@ -891,14 +908,24 @@ defBrush({id:'sculpt',name:'Sculpted Metal',desc:'Chiselled facets and hammered 
       qs:P.terraces?P.size*0.5/P.terraces:0, tex:hm?(u,v,x,y,r)=>-hm*r*0.08*Math.abs(nz(x*3,y*3)):null},false); }});
 
 // 21 Relief Sand — ropes made of salt-and-pepper grains, raised and lit, overlapping strokes cast shadows
-defBrush({polish:0.5,id:'rsand',name:'Dark Relief Sand',desc:'Dark grains heaped into raised relief, lit from the side.',
-  defaults:{size:30,color:'#e6e6e6',dark:0.12,blend:0.45,grain:1,texture:0.5,height:0.8,mode:'layer',taperIn:0.15,taperOut:0.15},
-  scene:{bg:'#09090b',bgType:0,az:135,el:35,shadowStr:0.9,shadowLen:40,shadowSoft:0.3,ao:0.7,ambient:0.3},
-  ui:[LAYER,{k:'color',l:'Light grain colour',t:'c',sw:['#e6e6e6','#d9cdb4','#c8b48c','#b9c9f0','#f0b9c9']},{k:'dark',l:'Dark grain brightness',t:'r',min:0,max:0.8,st:.01},{k:'blend',l:'Colour blend (light share)',t:'r',min:0,max:1,st:.01},{k:'grain',l:'Grain size',t:'r',min:0.4,max:3,st:.01},{k:'texture',l:'Grain texture',t:'r',min:0,max:1,st:.01},{k:'height',l:'Height',t:'r',min:0.1,max:2,st:.01}],
+defBrush({polish:0.35,id:'rsand',name:'Dark Relief Sand',desc:'Dark grains heaped into raised relief, lit from the side.',
+  defaults:{size:36,color:'#d2d2d2',dark:0.16,blend:0.6,grain:0.65,texture:0.3,profile:'bevel',bevelW:0.55,bevelCurve:1.4,height:1.3,ridge:0.55,mode:'layer',taperIn:0.15,taperOut:0.15},
+  scene:{bg:'#09090b',bgType:0,az:135,el:32,shadowStr:0.9,shadowLen:40,shadowSoft:0.3,ao:0.7,ambient:0.3},
+  ui:[LAYER,{k:'profile',l:'Profile',t:'s',o:[['bevel','Bevel'],['rope','Rope'],['ridge','Ridge']]},{k:'bevelW',l:'Bevel width',t:'r',min:0.05,max:1,st:.01},{k:'bevelCurve',l:'Bevel curve (cove ← straight → rounded)',t:'r',min:-1,max:2,st:.01},{k:'ridge',l:'Ridge sharpness (ridge profile)',t:'r',min:0,max:1,st:.01},{k:'height',l:'Height',t:'r',min:0.1,max:2,st:.01},{k:'color',l:'Light grain colour',t:'c',sw:['#dcdcdc','#d9cdb4','#c8b48c','#b9c9f0','#f0b9c9']},{k:'dark',l:'Dark grain brightness',t:'r',min:0,max:0.8,st:.01},{k:'blend',l:'Colour blend (light share)',t:'r',min:0,max:1,st:.01},{k:'grain',l:'Grain size',t:'r',min:0.4,max:3,st:.01},{k:'texture',l:'Grain texture',t:'r',min:0,max:1,st:.01}],
   layer:P=>P.mode==='layer',
-  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', gs=P.grain, tx=P.texture;
-    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.5,pf:q=>Math.pow(Math.max(0,1-q*q),0.7),hs:0.9*P.height,mat:M.GSAND,c:cOf(P),vr:Math.round(P.dark*255),grain:Math.round(P.blend*255),gloss:Math.round(clamp(gs/3,0,1)*255),
-      tex:tx?(u,v,x,y,r)=>tx*0.6*(hash2(Math.floor(x/gs*1.2),Math.floor(y/gs*1.2))-0.5):null},L); }});
+  seg(ctx,c,i){ const P=ctx.P, L=P.mode==='layer', gs=P.grain, tx=P.texture, rg=P.ridge, w=clamp(P.bevelW,0.03,1), cv=P.bevelCurve;
+    let pf, hs;
+    if(P.profile==='rope'){ pf=q=>Math.sqrt(Math.max(0,1-q*q)); hs=0.95*P.height; }
+    else if(P.profile==='ridge'){ pf=q=>{ const round=Math.sqrt(Math.max(0,1-q*q)), peak=Math.pow(Math.cos(q*Math.PI/2),1.3)*(1-0.25*q); return round*(1-rg)+peak*rg; }; hs=0.95*P.height; }
+    else { // flat top that curves down into a bevel along both edges
+      // 0..1: straight chamfer → quarter-round; 1..2: the rounded bevel spreads further over the top (pillowy dome)
+      const ww=cv>1?Math.min(1,w+(1-w)*(cv-1)*0.85):w, cc=Math.min(1,Math.max(-1,cv));
+      pf=q=>{ if(q<=1-ww) return 1; const t=Math.min(1,(q-(1-ww))/ww), straight=1-t;
+        return cc>=0 ? straight+(Math.sqrt(Math.max(0,1-t*t))-straight)*cc : straight+(Math.pow(1-t,2.6)-straight)*(-cc); };
+      hs=0.55*P.height; }
+    ropeSeg(ctx,c,i,{mode:L?0:1,k:P.size*0.5,pf,hs,mat:M.GSAND,c:cOf(P),vr:Math.round(P.dark*255),grain:Math.round(P.blend*255),gloss:Math.round(clamp(gs/3,0,1)*255),
+      tex:tx?(u,v,x,y,r)=>tx*0.3*(hash2(Math.floor(x/gs*1.2),Math.floor(y/gs*1.2))-0.5):null},L); }});
+
 // 22 Cyanotype — sun print: blooming feathered edges, a soft wash halo, mottled whites and salt-crystal bubbles
 function vor(x,y,s){ const gx=Math.floor(x/s), gy=Math.floor(y/s); let d=1e9; for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){ const cx=(gx+i+hash2(gx+i,gy+j))*s, cy=(gy+j+hash2(gx+i+71,gy+j+13))*s; const dd=Math.hypot(x-cx,y-cy); if(dd<d) d=dd; } return d/s; }
 defBrush({id:'cyano',name:'Cyanotype',desc:'Sun-print silhouettes: pale shapes with fibrous edges on Prussian blue.',
@@ -938,6 +965,10 @@ vec4 Tsel(ivec2 p,float lay){ if(lay>1.5) return vec4(0.); return lay>0.5?texelF
 vec4 Xsel(ivec2 p,float lay){ if(lay>1.5) return vec4(0.); return lay>0.5?texelFetch(uXu,p,0):texelFetch(uX,p,0); }
 vec4 Tat(ivec2 p){ p=clamp(p,ivec2(0),uSize-1); return Tsel(p,texelFetch(uD,p,0).g); }
 ivec2 docP(){ ivec2 f=ivec2(gl_FragCoord.xy); return ivec2(f.x,uSize.y-1-f.y); }
+vec3 normalWide(ivec2 p,int k){ float s=float(k);
+  float gx=(Hs(p+ivec2(k,0))-Hs(p-ivec2(k,0))+0.5*(Hs(p+ivec2(k,k))-Hs(p-ivec2(k,-k))+Hs(p+ivec2(k,-k))-Hs(p-ivec2(k,k))))/(4.*s)*uQ*uRelief;
+  float gy=(Hs(p+ivec2(0,k))-Hs(p-ivec2(0,k))+0.5*(Hs(p+ivec2(k,k))-Hs(p-ivec2(-k,k))+Hs(p+ivec2(-k,k))-Hs(p-ivec2(k,k))))/(4.*s)*uQ*uRelief;
+  return normalize(vec3(-gx,-gy,1.)); }
 vec3 normalAt(ivec2 p){
   float gx=(Hs(p+ivec2(1,0))-Hs(p-ivec2(1,0)))*0.5*uQ*uRelief;
   float gy=(Hs(p+ivec2(0,1))-Hs(p-ivec2(0,1)))*0.5*uQ*uRelief;
@@ -1031,7 +1062,19 @@ void main(){
   } else {
     float dif=ndl*sh; vec3 amb=vec3(uAmb)*ao;
     if(m==1){ // ceramic
-      vec3 c=alb*(1.-0.35*grn*(1.-ao)); float w=max((dot(N,L)+0.25)/1.25,0.)*mix(1.,sh,0.8); col=c*(amb*0.9+w*lc*0.85)+(pow(ndh,mix(18.,90.,gls))*0.45+pow(ndh,mix(60.,320.,gls))*0.6)*gls*sh*lc+fres*envL(R)*0.22*gls;
+      // glaze pooling: glaze collects (deeper, richer colour) in creases and where strokes meet, and thins to pale body on edges and crests
+      float slope=smoothstep(0.05,0.6,1.-N.z), crease=clamp((1.-ao)*2.2,0.,1.);
+      vec3 deep=alb*alb*0.82, body=mix(alb,vec3(0.95,0.93,0.89),0.55);
+      vec3 c=mix(alb,deep,grn*crease); c=mix(c,body,grn*slope*0.7); c*=1.-grn*0.12*(vnoise(fp*0.08)-0.5);
+      // lacquer: 0 = matte bisque (soft, no gloss), 1 = wet lacquer (sharp highlight + mirror reflections)
+      float w=max((dot(N,L)+0.25)/1.25,0.)*mix(1.,sh,0.8);
+      vec3 base=c*(amb*0.9+w*lc*mix(0.95,0.72,gls));
+      // the glaze's reflections use an exaggerated normal so even gentle curvature mirrors the room like real glazed porcelain
+      vec3 Nw=normalWide(p,max(2,int(uQ*2.5))); vec3 Nr=normalize(vec3(Nw.xy*4.,Nw.z)); vec3 Rr=reflect(vec3(0,0,-1),Nr); float ndr=max(dot(Nr,Hh),0.);
+      float spec=pow(ndh,mix(6.,30.,gls))*mix(0.03,0.2,gls)+pow(ndr,mix(30.,220.,gls))*mix(0.,1.8,gls*gls);
+      float env=envL(Rr); float sl2=smoothstep(0.02,0.5,1.-Nr.z); float band=smoothstep(0.3,0.7,env);
+      col=base*mix(1.,mix(0.42,1.08,band),gls*gls*sl2)+spec*sh*lc+vec3(smoothstep(0.7,0.85,env))*sl2*0.35*gls*gls+(vnoise(fp*1.3)-0.5)*0.05*(1.-gls);
+      col=mix(col,col*vec3(0.97,0.96,0.94)*(0.92+0.1*hash(floor(fp*1.5))),1.-gls);  // bisque: dry, slightly toothy
     } else if(m==2){ // stone: flat matte slab; grain only on the bevel that faces the light
       vec3 c=alb*(0.93+0.14*vr)*(0.975+0.05*vnoise(fp*0.7))*(0.985+0.03*hash(floor(fp*1.7)));
       float band=gls; // 0 on the solid slab, rising to 1 toward the outer edge (wandering, faded boundary)
@@ -1076,11 +1119,15 @@ void main(){
     } else if(m==16){ vec3 c=alb*(0.82+0.3*vr); float w=max((dot(N,L)+0.2)/1.2,0.)*sh; col=c*(amb+w*lc)+pow(ndh,mix(10.,60.,gls))*0.5*gls*sh*lc+alb*0.12*(1.-ndl);
     } else if(m==17){ col=alb*(amb*0.95+max((dot(N,L)+0.2)/1.2,0.)*mix(1.,sh,0.8)*lc*0.95)*(0.75+0.25*ao)+pow(ndh,22.)*0.14*sh;
       if(grn>0.){ float sp=hash(floor(fp*1.8)); float flat_=smoothstep(0.12,0.0,1.-N.z); float dens=grn*(0.25+0.75*flat_)*(0.5+0.8*vnoise(fp*0.25)); col=mix(col,col*0.25,step(1.-dens*0.45,sp)); col+=step(1.-dens*0.06,hash(floor(fp*1.8)+5.))*0.35*sh; }
-    } else if(m==21){ // salt-and-pepper grain sand: light and dark grains, lit as a rough heap
+    } else if(m==21){ // salt-and-pepper sand ridge: the light picks out bright grains on the facing slope, the far slope goes dark
       float gsz=mix(0.3,3.,gls); vec2 gc=floor(fp/gsz); float hgr=hash(gc), hg2=hash(gc+31.);
-      vec3 dark=alb*vr*0.9+vec3(0.02), light=alb*(0.85+0.3*hg2);
-      vec3 c=mix(dark,light,step(1.-grn,hgr));
-      float w=pow(max(dot(N,L),0.),0.8)*sh; col=c*(amb*0.55+w*lc*1.25)*(0.55+0.45*ao)+step(0.985,hash(gc+7.))*0.4*w;
+      float lam=clamp(dot(N,L),0.,1.)*sh, lamF=clamp(L.z,0.05,1.);
+      float rel=lam/lamF;                                                   // 1 on the flat top, >1 on the lit bevel, <1 on the far bevel
+      float share=clamp(grn*(0.15+0.95*rel),0.,1.);                         // flat top stays bright and grainy; the far bevel thins out
+      float lit=clamp(rel-1.,0.,1.);
+      vec3 dark=alb*vr*0.9+vec3(0.015), light=alb*(0.55+0.35*hg2);
+      vec3 c=mix(dark,light,step(1.-share,hgr));
+      col=c*(amb*0.6+lam*lc*1.25)*(0.65+0.35*ao)+step(0.992,hash(gc+7.))*0.3*lit;
     } else { col=alb*(amb+dif*lc); }
   }
   if(uTransp==1&&m!=0&&m!=10&&m!=18&&m!=12){ // soft alpha along the outline instead of a hard 1-pixel cut
@@ -1585,10 +1632,10 @@ const SCENE0={az:135,el:38,intensity:1,ambient:0.42,shine:0.6,refl:0.5,lightCol:
   bg:'#e9e6df',bgType:1,transparent:false,grain:0.05,grainAnim:false,point:0,pointMode:0,posterize:0,style:0,duo1:'#14213d',duo2:'#f5e9d0',sat:1,contrast:1,vignette:0,hue:0,
   kShadow:'#141414',kMid:'#8e8e8e',kHigh:'#ffffff',orbit:false,orbitSpeed:30};
 const SCENE_RESET=['bg','bgType','shadowStr','shadowLen','shadowSoft','refl','shine','el','az','ao','ambient','micro','grain','imgRefl','kShadow','kMid','kHigh'];
-const GLOBAL0={size:1,pool:0,thin:0,wvar:0,taper:0,pressure:1,wobble:0};
+const GLOBAL0={size:1,pool:0,thin:0,wvar:0,taper:0,pressure:1,wobble:0,bubbles:0,sink:0};
 let doc={global:Object.assign({},GLOBAL0),aspect:'4:3',strokes:[],scene:Object.assign({},SCENE0),nextId:1,anim:Object.assign({},ANIM0)};
 let ui={brush:'kinetic',eraser:false,params:{},sym:{mode:'none',n:6,cx:.5,cy:.5,guides:true},tool:'draw',tab:'brush',sel:null,quality:1.5,penOnly:false,applyAll:true};
-const BRUSH_VER=5; // bump when brush defaults change so saved brush settings don't hide the new look
+const BRUSH_VER=7; // bump when brush defaults change so saved brush settings don't hide the new look
 let S, R, bgImg=null, undoS=[], redoS=[];
 const sc=()=>doc.scene;
 function Lvec(s){ const a=s.az*Math.PI/180, e=s.el*Math.PI/180; return [Math.cos(a)*Math.cos(e),-Math.sin(a)*Math.cos(e),Math.sin(e)]; }
@@ -1695,7 +1742,7 @@ function brushControls(par,brushId,P,onChange,onCommit){
   }
 }
 function flowControls(par,P,onChange,onCommit){
-  const F=[['pool','Pooling',0,2,0.01],['thin','Thin between pools',0,1,0.01],['poolGap','Pool spacing',0.3,3,0.01],['wvar','Width variation',0,1,0.01],['wfreq','Variation scale',0.2,4,0.01],['pressure','Pencil pressure',0,1,0.01],['speedInf','Speed thinning',-1,1,0.01]];
+  const F=[['pool','Pooling',0,2,0.01],['thin','Thin between pools',0,1,0.01],['poolGap','Pool spacing',0.3,3,0.01],['wvar','Width variation',0,1,0.01],['wfreq','Variation scale',0.2,4,0.01],['bubbles','Bubbles (raised blisters)',0,1.5,0.01],['bubbleSize','Bubble size',0.1,1.5,0.01],['sink','Sinks (dents)',0,1.5,0.01],['sinkSize','Sink size',0.1,1.5,0.01],['pressure','Pencil pressure',0,1,0.01],['speedInf','Speed thinning',-1,1,0.01]];
   for(const [k,l,a,b,s] of F) ctlSlider(par,l,()=>P[k],v=>{P[k]=v;onChange(k);},a,b,s,onCommit);
 }
 function dynamicsControls(par,P,onChange,onCommit){
@@ -1812,7 +1859,7 @@ function renderStrokes(){
   const ga=section(p,'All strokes'); const G=doc.global;
   const gh=el('p','hint'); gh.textContent='These adjust every stroke on the canvas at once (and new ones), on top of each stroke’s own settings.'; ga.append(gh);
   const gch=()=>{ GADJ=G; stopAnimView(); liveRebuild(); save(); }, gcm=()=>{ if(propDirty){ propDirty=false; schedRebuild(); } };
-  for(const [k,l,a0,b0,s0] of [['size','Width ×',0.2,3,0.01],['pool','Pooling +',-1,2,0.01],['thin','Thin between pools +',-1,1,0.01],['wvar','Width variation +',-1,1,0.01],['taper','Taper ends +',-1,1,0.01],['pressure','Pencil pressure ×',0,2,0.01],['wobble','Wobble +',0,1,0.01]])
+  for(const [k,l,a0,b0,s0] of [['size','Width ×',0.2,3,0.01],['pool','Pooling +',-1,2,0.01],['thin','Thin between pools +',-1,1,0.01],['wvar','Width variation +',-1,1,0.01],['taper','Taper ends +',-1,1,0.01],['bubbles','Bubbles +',0,1.5,0.01],['sink','Sinks +',0,1.5,0.01],['pressure','Pencil pressure ×',0,2,0.01],['wobble','Wobble +',0,1,0.01]])
     ctlSlider(ga,l,()=>G[k],v=>{G[k]=v;gch();},a0,b0,s0,gcm);
   ctlBtn(ga,'Reset all-stroke adjustments',()=>{ doc.global=Object.assign({},GLOBAL0); GADJ=doc.global; rebuild(); save(); renderStrokes(); });
   const a=section(p,'Tool'); ctlSeg(a,null,[['draw','Draw'],['move','Select / move']],()=>ui.tool,v=>{ setTool(v); });
